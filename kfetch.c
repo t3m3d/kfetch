@@ -4,7 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <tchar.h>
+#include <setupapi.h>
+#include <devguid.h>
+#include <regstr.h>
+#include <initguid.h>
 
+DEFINE_GUID(GUID_DEVCLASS_DISPLAY,
+    0x4d36e968, 0xe325, 0x11ce,
+    0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18);
+
+
+#pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "advapi32.lib")
 
 void set_color(WORD attr) {
@@ -33,8 +43,6 @@ void get_computername(char *buf, DWORD size) {
 }
 
 void get_os_version(char *buf, size_t size) {
-    /* Note: GetVersionEx is deprecated but OK for a toy tool.
-       For production, use Version Helper APIs or RtlGetVersion. */
     OSVERSIONINFOEXA vi;
     ZeroMemory(&vi, sizeof(vi));
     vi.dwOSVersionInfoSize = sizeof(vi);
@@ -119,7 +127,50 @@ void get_console_size(short *cols, short *rows) {
     }
 }
 
-/* ---------- Printing helpers ---------- */
+void get_gpus(char gpuNames[2][256], int *gpuCount) {
+    *gpuCount = 0;
+
+    HDEVINFO hDevInfo = SetupDiGetClassDevsA(
+        &GUID_DEVCLASS_DISPLAY,
+        NULL,
+        NULL,
+        DIGCF_PRESENT
+    );
+
+    if (hDevInfo == INVALID_HANDLE_VALUE)
+        return;
+
+    SP_DEVINFO_DATA devInfo;
+    devInfo.cbSize = sizeof(SP_DEVINFO_DATA);
+
+    for (DWORD i = 0; i < 10 && *gpuCount < 2; i++) {
+        if (!SetupDiEnumDeviceInfo(hDevInfo, i, &devInfo))
+            break;
+
+        char name[256];
+        DWORD size = sizeof(name);
+        DWORD type = 0;
+
+        if (!SetupDiGetDeviceRegistryPropertyA(
+                hDevInfo,
+                &devInfo,
+                SPDRP_DEVICEDESC,
+                &type,
+                (BYTE*)name,
+                size,
+                &size))
+            continue;
+
+        if (strstr(name, "Microsoft Basic Render"))
+            continue;
+
+        strncpy(gpuNames[*gpuCount], name, 256);
+        gpuNames[*gpuCount][255] = '\0';
+        (*gpuCount)++;
+    }
+
+    SetupDiDestroyDeviceInfoList(hDevInfo);
+}
 
 void print_label_value(const char *label, const char *value) {
     set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
@@ -145,6 +196,8 @@ int main(void) {
     DWORDLONG totalMB, freeMB;
     short cols, rows;
     UINT cp;
+    char gpus[2][256];
+    int gpuCount = 0;
 
     get_username(username, sizeof(username));
     get_computername(computer, sizeof(computer));
@@ -154,6 +207,8 @@ int main(void) {
     get_memory_info(&totalMB, &freeMB);
     get_console_size(&cols, &rows);
     cp = GetConsoleOutputCP();
+    get_gpus(gpus, &gpuCount);
+
 
     system("cls");
 
@@ -174,40 +229,54 @@ int main(void) {
     char termLine[256];
     _snprintf(termLine, sizeof(termLine), "Terminal: %hdx%hd  CP %u",
               cols, rows, cp);
+char gpuLine[256];
+
+if (gpuCount == 0)
+    snprintf(gpuLine, sizeof(gpuLine), "None detected");
+else if (gpuCount == 1)
+    snprintf(gpuLine, sizeof(gpuLine), "%s", gpus[0]);
+else
+    snprintf(gpuLine, sizeof(gpuLine), "GPU0: %s | GPU1: %s", gpus[0], gpus[1]);
 
     strncpy(line3, cpu, sizeof(line3)); line3[sizeof(line3)-1] = '\0';
     strncpy(line4, memLine, sizeof(line4)); line4[sizeof(line4)-1] = '\0';
     strncpy(line5, termLine, sizeof(line5)); line5[sizeof(line5)-1] = '\0';
 
-    const char *infoLines[5] = { line1, line2, line3, line4, line5 };
+    const char *infoLines[7] = { line1, line2, line3, gpuLine, line4, line5, "" };
 
     int i;
-    for (i = 0; i < 5; ++i) {
+    for (i = 0; i < 7; ++i) {
         /* Logo (left) */
         set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
  
-        switch (i) {
-    case 0: printf(" _   __ "); break;
-            case 1: printf("| | / / "); break;
-            case 2: printf("| |/ /  "); break;
-            case 3: printf("| |\\ \\  "); break;
-            case 4: printf("|_| \\_\\ "); break;
-        }
+    switch (i) {
+        case 0: printf("┌──────┬──────┐ "); break;
+        case 1: printf("│ ████ │ ████ │ "); break;
+        case 2: printf("│ ████ │ ████ │ "); break;
+        case 3: printf("├──────┼──────┤ "); break;
+        case 4: printf("│ ████ │ ████ │ "); break;
+        case 5: printf("│ ████ │ ████ │ "); break;
+        case 6: printf("└──────┴──────┘ "); break;
+}
+
+
         reset_color();
 
         printf("     ");
 
         set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
         if (i == 0) {
-            printf("%-10s", "User");
+        printf("%-10s", "User");
         } else if (i == 1) {
-            printf("%-10s", "OS");
+        printf("%-10s", "OS");
         } else if (i == 2) {
-            printf("%-10s", "CPU");
+        printf("%-10s", "CPU");
         } else if (i == 3) {
-            printf("%-10s", "Memory");
+        printf("%-10s", "GPU");
         } else if (i == 4) {
-            printf("%-10s", "Terminal");
+        printf("%-10s", "Memory");
+        } else if (i == 5) {
+        printf("%-10s", "Terminal");
         }
         reset_color();
         printf(": %s\n", infoLines[i]);
