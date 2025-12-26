@@ -13,7 +13,6 @@ DEFINE_GUID(GUID_DEVCLASS_DISPLAY,
     0x4d36e968, 0xe325, 0x11ce,
     0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18);
 
-
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "advapi32.lib")
 
@@ -48,14 +47,60 @@ void get_os_version(char *buf, size_t size) {
     vi.dwOSVersionInfoSize = sizeof(vi);
     if (GetVersionExA((OSVERSIONINFOA*)&vi)) {
         _snprintf(buf, size, "Windows %lu.%lu (build %lu)",
-                  vi.dwMajorVersion,
-                  vi.dwMinorVersion,
-                  vi.dwBuildNumber);
+            vi.dwMajorVersion,
+            vi.dwMinorVersion,
+            vi.dwBuildNumber);
     } else {
         strncpy(buf, "Windows (version unknown)", size);
         buf[size - 1] = '\0';
     }
 }
+
+void get_cpu_core_info(int *cores, int *threads) {
+    *cores = 0;
+    *threads = 0;
+
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *buffer =
+        (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)malloc(len);
+
+    if (!buffer)
+        return;
+
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, buffer, &len)) {
+        free(buffer);
+        return;
+    }
+
+    char *ptr = (char*)buffer;
+    char *end = ptr + len;
+
+    while (ptr < end) {
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *info =
+            (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)ptr;
+
+        if (info->Relationship == RelationProcessorCore) {
+            (*cores)++;
+
+            // Count logical processors (threads)
+            KAFFINITY mask = info->Processor.GroupMask[0].Mask;
+            int count = 0;
+            while (mask) {
+                count += mask & 1;
+                mask >>= 1;
+            }
+            *threads += count;
+        }
+
+        ptr += info->Size;
+    }
+
+    free(buffer);
+}
+
+
 
 void get_arch(char *buf, size_t size) {
     SYSTEM_INFO si;
@@ -172,43 +217,87 @@ void get_gpus(char gpuNames[2][256], int *gpuCount) {
     SetupDiDestroyDeviceInfoList(hDevInfo);
 }
 
-void print_label_value(const char *label, const char *value) {
-    set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-    printf("%-12s", label);
-    reset_color();
-    printf(": %s\n", value);
-}
+void get_disk_info(char *out, size_t outSize) {
+    char drives[256];
+    DWORD len = GetLogicalDriveStringsA(sizeof(drives), drives);
 
-void print_label_value_u64(const char *label, DWORDLONG value) {
-    char tmp[64];
-    _snprintf(tmp, sizeof(tmp), "%llu MB", (unsigned long long)value);
-    print_label_value(label, tmp);
+    out[0] = '\0';
+
+    if (len == 0 || len > sizeof(drives))
+        return;
+
+    char *p = drives;
+    while (*p) {
+        ULARGE_INTEGER freeBytesAvailable, totalBytes, totalFreeBytes;
+
+        if (GetDiskFreeSpaceExA(p, &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
+            char line[256];
+
+            unsigned long long totalGB = totalBytes.QuadPart / (1024ULL * 1024ULL * 1024ULL);
+            unsigned long long freeGB  = totalFreeBytes.QuadPart / (1024ULL * 1024ULL * 1024ULL);
+            unsigned long long usedGB  = totalGB - freeGB;
+
+            snprintf(line, sizeof(line),
+                     "%s %lluGB used / %lluGB total\n",
+                     p, usedGB, totalGB);
+
+            strncat(out, line, outSize - strlen(out) - 1);
+        }
+
+        p += strlen(p) + 1;
+    }
 }
 
 int main(void) {
     SetConsoleOutputCP(CP_UTF8);
+
     char username[256];
     char computer[256];
     char osver[256];
     char arch[64];
     char cpu[256];
-
+    char diskInfo[1024];
+    char diskLine[1024];
     DWORDLONG totalMB, freeMB;
     short cols, rows;
     UINT cp;
     char gpus[2][256];
     int gpuCount = 0;
 
+    int cpuCores = 0;
+    int cpuThreads = 0;
+
+    // Collect system info
     get_username(username, sizeof(username));
     get_computername(computer, sizeof(computer));
     get_os_version(osver, sizeof(osver));
     get_arch(arch, sizeof(arch));
     get_cpu_brand(cpu, sizeof(cpu));
+    get_cpu_core_info(&cpuCores, &cpuThreads);
     get_memory_info(&totalMB, &freeMB);
     get_console_size(&cols, &rows);
     cp = GetConsoleOutputCP();
     get_gpus(gpus, &gpuCount);
+    get_disk_info(diskInfo, sizeof(diskInfo));
+    snprintf(diskLine, sizeof(diskLine), "%s", diskInfo);
 
+    // Split disk lines
+    char disk1[256] = "";
+    char disk2[256] = "";
+    char disk3[256] = "";
+
+    {
+        char temp[1024];
+        strncpy(temp, diskLine, sizeof(temp));
+        temp[sizeof(temp) - 1] = '\0';
+
+        char *p = strtok(temp, "\n");
+        if (p) strncpy(disk1, p, sizeof(disk1));
+        p = strtok(NULL, "\n");
+        if (p) strncpy(disk2, p, sizeof(disk2));
+        p = strtok(NULL, "\n");
+        if (p) strncpy(disk3, p, sizeof(disk3));
+    }
 
     system("cls");
 
@@ -218,8 +307,13 @@ int main(void) {
     printf("\n");
 
     char line1[256], line2[256], line3[256], line4[256], line5[256];
+
     _snprintf(line1, sizeof(line1), "%s@%s", username, computer);
     _snprintf(line2, sizeof(line2), "%s (%s)", osver, arch);
+
+    _snprintf(line3, sizeof(line3),
+              "%s (%d cores / %d threads)",
+              cpu, cpuCores, cpuThreads);
 
     char memLine[256];
     _snprintf(memLine, sizeof(memLine), "RAM: %lluMB / %lluMB free",
@@ -229,56 +323,73 @@ int main(void) {
     char termLine[256];
     _snprintf(termLine, sizeof(termLine), "Terminal: %hdx%hd  CP %u",
               cols, rows, cp);
-char gpuLine[256];
 
-if (gpuCount == 0)
-    snprintf(gpuLine, sizeof(gpuLine), "None detected");
-else if (gpuCount == 1)
-    snprintf(gpuLine, sizeof(gpuLine), "%s", gpus[0]);
-else
-    snprintf(gpuLine, sizeof(gpuLine), "GPU0: %s | GPU1: %s", gpus[0], gpus[1]);
+    strncpy(line4, memLine, sizeof(line4));
+    line4[sizeof(line4) - 1] = '\0';
+    strncpy(line5, termLine, sizeof(line5));
+    line5[sizeof(line5) - 1] = '\0';
 
-    strncpy(line3, cpu, sizeof(line3)); line3[sizeof(line3)-1] = '\0';
-    strncpy(line4, memLine, sizeof(line4)); line4[sizeof(line4)-1] = '\0';
-    strncpy(line5, termLine, sizeof(line5)); line5[sizeof(line5)-1] = '\0';
+    // GPU lines
+    char gpu1[256] = "";
+    char gpu2[256] = "";
 
-    const char *infoLines[7] = { line1, line2, line3, gpuLine, line4, line5, "" };
+    if (gpuCount == 0) {
+        snprintf(gpu1, sizeof(gpu1), "None detected");
+        gpu2[0] = '\0';
+    } else if (gpuCount == 1) {
+        snprintf(gpu1, sizeof(gpu1), "%s", gpus[0]);
+        gpu2[0] = '\0';
+    } else {
+        snprintf(gpu1, sizeof(gpu1), "%s", gpus[0]);
+        snprintf(gpu2, sizeof(gpu2), "%s", gpus[1]);
+    }
+
+    // 10 rows total: user, os, cpu, gpu1, gpu2, mem, term, disk1-3
+    const char *infoLines[10] = {
+        line1,  // 0 User
+        line2,  // 1 OS
+        line3,  // 2 CPU
+        gpu1,   // 3 GPU line 1
+        gpu2,   // 4 GPU line 2
+        line4,  // 5 Memory
+        line5,  // 6 Terminal
+        disk1,  // 7 Disk line 1
+        disk2,  // 8 Disk line 2
+        disk3   // 9 Disk line 3
+    };
 
     int i;
-    for (i = 0; i < 7; ++i) {
-        /* Logo (left) */
+    for (i = 0; i < 10; ++i) {
+
         set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
- 
-    switch (i) {
-        case 0: printf("┌──────┬──────┐ "); break;
-        case 1: printf("│ ████ │ ████ │ "); break;
-        case 2: printf("│ ████ │ ████ │ "); break;
-        case 3: printf("├──────┼──────┤ "); break;
-        case 4: printf("│ ████ │ ████ │ "); break;
-        case 5: printf("│ ████ │ ████ │ "); break;
-        case 6: printf("└──────┴──────┘ "); break;
-}
-
-
+        switch (i) {
+            case 0: printf("┌──────────┬──────────┐"); break;
+            case 1: printf("│ ████████ │ ████████ │"); break;
+            case 2: printf("│ ████████ │ ████████ │"); break;
+            case 3: printf("│ ████████ │ ████████ │"); break;
+            case 4: printf("├──────────┼──────────┤"); break;
+            case 5: printf("│ ████████ │ ████████ │"); break;
+            case 6: printf("│ ████████ │ ████████ │"); break;
+            case 7: printf("│ ████████ │ ████████ │"); break;
+            case 8: printf("└──────────┴──────────┘"); break;
+            case 9: printf("                       "); break; // Blank row under logo
+        }
         reset_color();
 
         printf("     ");
 
         set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        if (i == 0) {
-        printf("%-10s", "User");
-        } else if (i == 1) {
-        printf("%-10s", "OS");
-        } else if (i == 2) {
-        printf("%-10s", "CPU");
-        } else if (i == 3) {
-        printf("%-10s", "GPU");
-        } else if (i == 4) {
-        printf("%-10s", "Memory");
-        } else if (i == 5) {
-        printf("%-10s", "Terminal");
-        }
+        if (i == 0) printf("%-10s", "User");
+        else if (i == 1) printf("%-10s", "OS");
+        else if (i == 2) printf("%-10s", "CPU");
+        else if (i == 3) printf("%-10s", "GPU");
+        else if (i == 4) printf("%-10s", "");
+        else if (i == 5) printf("%-10s", "Memory");
+        else if (i == 6) printf("%-10s", "Terminal");
+        else if (i == 7) printf("%-10s", "Disk");
+        else printf("%-10s", "");
         reset_color();
+
         printf(": %s\n", infoLines[i]);
     }
 
@@ -292,3 +403,4 @@ else
 
     return 0;
 }
+
