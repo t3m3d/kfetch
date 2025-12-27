@@ -292,36 +292,48 @@ void get_gpus(char gpuNames[2][256], int *gpuCount) {
         }
     }
 
-
-
 void get_disk_info(char *out, size_t outSize) {
-    char drives[256];
-    DWORD len = GetLogicalDriveStringsA(sizeof(drives), drives);
-
     out[0] = '\0';
 
-    if (len == 0 || len > sizeof(drives))
-        return;
+    DWORD drives = GetLogicalDrives();
 
-    char *p = drives;
-    while (*p) {
-        ULARGE_INTEGER freeBytesAvailable, totalBytes, totalFreeBytes;
+    for (char letter = 'A'; letter <= 'Z'; letter++) {
+        if (!(drives & (1 << (letter - 'A'))))
+            continue;
 
-        if (GetDiskFreeSpaceExA(p, &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
+        char root[4];
+        snprintf(root, sizeof(root), "%c:\\", letter);
+
+        ULARGE_INTEGER freeBytes, totalBytes, totalFreeBytes;
+        if (!GetDiskFreeSpaceExA(root, &freeBytes, &totalBytes, &totalFreeBytes)) {
             char line[256];
-
-            unsigned long long totalGB = totalBytes.QuadPart / (1024ULL * 1024ULL * 1024ULL);
-            unsigned long long freeGB  = totalFreeBytes.QuadPart / (1024ULL * 1024ULL * 1024ULL);
-            unsigned long long usedGB  = totalGB - freeGB;
-
-            snprintf(line, sizeof(line),
-                     "%s %lluGB used / %lluGB total\n",
-                     p, usedGB, totalGB);
-
+            snprintf(line, sizeof(line), "%s  (access denied)\n", root);
             strncat(out, line, outSize - strlen(out) - 1);
+            continue;
         }
 
-        p += strlen(p) + 1;
+        unsigned long long totalGB = totalBytes.QuadPart / (1024ULL*1024ULL*1024ULL);
+        unsigned long long freeGB  = totalFreeBytes.QuadPart / (1024ULL*1024ULL*1024ULL);
+        unsigned long long usedGB  = totalGB - freeGB;
+
+        double percent = (totalGB > 0)
+            ? ((double)usedGB / (double)totalGB * 100.0)
+            : 0.0;
+
+        char bar[64] = "";
+        int width = 20;
+        int used = (int)((percent / 100.0) * width);
+        int free = width - used;
+
+        for (int i = 0; i < used; i++) strcat(bar, "█");
+        for (int i = 0; i < free; i++) strcat(bar, "\xE2\x96\x92");
+
+        char line[256];
+        snprintf(line, sizeof(line),
+                 "%s  %lluGB / %lluGB  %.0f%%  [%s]\n",
+                 root, usedGB, totalGB, percent, bar);
+
+        strncat(out, line, outSize - strlen(out) - 1);
     }
 }
 
@@ -400,23 +412,24 @@ int main(int argc, char** argv) {
     get_disk_info(diskInfo, sizeof(diskInfo));
     snprintf(diskLine, sizeof(diskLine), "%s", diskInfo);
 
-    // Split disk lines
-    char disk1[256] = "";
-    char disk2[256] = "";
-    char disk3[256] = "";
+    char disk1[1024] = "";
+    char disk2[1024] = "";
+    char disk3[1024] = "";
 
-    {
-        char temp[1024];
-        strncpy(temp, diskLine, sizeof(temp));
-        temp[sizeof(temp) - 1] = '\0';
+{
+    char temp[1024];
+    strncpy(temp, diskLine, sizeof(temp));
+    temp[sizeof(temp) - 1] = '\0';
 
-        char *p = strtok(temp, "\n");
-        if (p) strncpy(disk1, p, sizeof(disk1));
-        p = strtok(NULL, "\n");
-        if (p) strncpy(disk2, p, sizeof(disk2));
-        p = strtok(NULL, "\n");
-        if (p) strncpy(disk3, p, sizeof(disk3));
-    }
+    char *p = strtok(temp, "\n");
+    if (p) strncpy(disk1, p, sizeof(disk1));
+    p = strtok(NULL, "\n");
+    if (p) strncpy(disk2, p, sizeof(disk2));
+    p = strtok(NULL, "\n");
+    if (p) strncpy(disk3, p, sizeof(disk3));
+}
+
+
 
     system("cls");
 
@@ -496,6 +509,7 @@ int main(int argc, char** argv) {
             case 9: printf("                       "); break;
             case 10: printf("                       "); break;
             case 11: printf("                       "); break;
+            case 12: printf("                       "); break;
         }
         reset_color();
 
