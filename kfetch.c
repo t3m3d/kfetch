@@ -77,9 +77,7 @@ void get_os_version(char *buf, size_t size) {
         RegCloseKey(hKey);
     }
 
-    //
-    // Convert EditionID → Friendly name
-    //
+    // windows home/pro/iot
     if (strcmp(editionBuf, "Professional") == 0) editionName = "Pro";
     else if (strcmp(editionBuf, "Core") == 0) editionName = "Home";
     else if (strcmp(editionBuf, "Enterprise") == 0) editionName = "Enterprise";
