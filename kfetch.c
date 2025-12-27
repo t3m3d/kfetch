@@ -294,21 +294,30 @@ int main(int argc, char** argv) {
     unsigned long long usedMB = totalMB - freeMB;
     double ramPercent = 0.0;
 
-    if (totalMB > 0) {
-        ramPercent = (double)usedMB / (double)totalMB * 100.0;
+        if (totalMB > 0) {
+            ramPercent = (double)usedMB / (double)totalMB * 100.0;
+}
+        int barWidth = 20;
+        int usedFilled = (int)((ramPercent / 100.0) * barWidth);
+        int freeFilled = barWidth - usedFilled;
+        char bar[128];
+        memset(bar, 0, sizeof(bar));
+
+
+// ram representation colors
+        for (int i = 0; i < freeFilled; i++) {
+        strcat(bar, "\xE2\x96\x92");
+    }
+        for (int i = 0; i < usedFilled; i++) {
+        strcat(bar, "█");
     }
 
     char ramBar[64];
-    int barWidth = 20;
-    int filled = (int)((ramPercent / 100.0) * barWidth);
+    memset(ramBar, 0, sizeof(ramBar));
+    _snprintf(ramBar, sizeof(ramBar),
+          "[%s]", bar);
 
-    char bar[128] = "";
-    for (int i = 0; i < barWidth; i++) {
-        strcat(bar, (i < filled) ? "█" : "-");
-    }
 
-_snprintf(ramBar, sizeof(ramBar),
-          "[%s] %.0f%%", bar, ramPercent);
 
 
     get_console_size(&cols, &rows);
@@ -353,10 +362,9 @@ _snprintf(ramBar, sizeof(ramBar),
 
     char memLine[256];
 _snprintf(memLine, sizeof(memLine),
-          "RAM: %lluMB used / %lluMB total  %s",
-          (unsigned long long)usedMB,
-          (unsigned long long)totalMB,
-          ramBar);
+          "RAM: %lluMB used / %lluMB total %.0f%%  %s",
+          usedMB, totalMB, ramPercent, ramBar);
+
 
 
     char termLine[256];
@@ -390,11 +398,11 @@ _snprintf(memLine, sizeof(memLine),
         line3,  // 2 CPU
         gpu1,   // 3 GPU line 1
         gpu2,   // 4 GPU line 2
-        line4,  // 5 Memory
-        line5,  // 6 Terminal
-        disk1,  // 7 Disk line 1
-        disk2,  // 8 Disk line 2
-        disk3   // 9 Disk line 3
+        line5,  // 5 Memory
+        disk1,  // 6 Terminal
+        disk2,  // 7 Disk line 1
+        disk3,  // 8 Disk line 2
+        line4   
     };
 
     int i;
