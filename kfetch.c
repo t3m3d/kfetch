@@ -396,13 +396,13 @@ _snprintf(memLine, sizeof(memLine),
         line1,  // 0 User
         line2,  // 1 OS
         line3,  // 2 CPU
-        gpu1,   // 3 GPU line 1
-        gpu2,   // 4 GPU line 2
-        line5,  // 5 Memory
-        disk1,  // 6 Terminal
-        disk2,  // 7 Disk line 1
-        disk3,  // 8 Disk line 2
-        line4   
+        gpu1,   // 3 GPU 1
+        gpu2,   // 4 GPU 2
+        line5,  // 5 terminal
+        disk1,  // 6 disk 1
+        disk2,  // 7 Disk 2
+        disk3,  // 8 Disk 3
+        line4   //memory bar
     };
 
     int i;
@@ -429,11 +429,11 @@ _snprintf(memLine, sizeof(memLine),
         if (i == 0) printf("%-10s", "User");
         else if (i == 1) printf("%-10s", "OS");
         else if (i == 2) printf("%-10s", "CPU");
-        else if (i == 3) printf("%-10s", "GPU");
-        else if (i == 4) printf("%-10s", "");
+        else if (i == 3) printf("%-10s", "Main GPU");
+        else if (i == 4) printf("%-10s", "Alt GPU");
         else if (i == 5) printf("%-10s", "Memory");
         else if (i == 6) printf("%-10s", "Terminal");
-        else if (i == 7) printf("%-10s", "Disk");
+        else if (i == 7) printf("%-10s", "Disks");
         else printf("%-10s", "");
         reset_color();
 
