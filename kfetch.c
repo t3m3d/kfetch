@@ -57,9 +57,6 @@ void get_os_version(char *buf, size_t size) {
     const char *versionName = "Windows";
     const char *editionName = "Unknown Edition";
 
-    //
-    // Read EditionID from registry
-    //
     HKEY hKey;
     char editionBuf[128] = {0};
     DWORD type = REG_SZ;
@@ -77,7 +74,6 @@ void get_os_version(char *buf, size_t size) {
         RegCloseKey(hKey);
     }
 
-    // windows home/pro/iot
     if (strcmp(editionBuf, "Professional") == 0) editionName = "Pro";
     else if (strcmp(editionBuf, "Core") == 0) editionName = "Home";
     else if (strcmp(editionBuf, "Enterprise") == 0) editionName = "Enterprise";
@@ -88,7 +84,7 @@ void get_os_version(char *buf, size_t size) {
     else if (strcmp(editionBuf, "CoreN") == 0) editionName = "Home N";
     else if (strcmp(editionBuf, "CoreSingleLanguage") == 0) editionName = "Home Single Language";
     else if (editionBuf[0] != '\0') editionName = editionBuf; // fallback to raw name
-    // Windows 10 and 11 detection
+
     if      (build >= 26100) versionName = "Windows 11";
     else if (build >= 22631) versionName = "Windows 11";
     else if (build >= 22621) versionName = "Windows 11";
@@ -272,6 +268,31 @@ void get_gpus(char gpuNames[2][256], int *gpuCount) {
 
     SetupDiDestroyDeviceInfoList(hDevInfo);
 }
+// uptime function
+    void get_uptime(char *buf, size_t size) {
+        ULONGLONG ms = GetTickCount64();
+
+        ULONGLONG totalSeconds = ms / 1000;
+        ULONGLONG minutes = totalSeconds / 60;
+        ULONGLONG hours = minutes / 60;
+        ULONGLONG days = hours / 24;
+
+        hours %= 24;
+        minutes %= 60;
+
+        if (days > 0) {
+            _snprintf(buf, size, "%llu days, %llu hrs, %llu mins",
+                  days, hours, minutes);
+        } else if (hours > 0) {
+            _snprintf(buf, size, "%llu hrs, %llu mins",
+                  hours, minutes);
+        } else {
+            _snprintf(buf, size, "%llu mins",
+                  minutes);
+        }
+    }
+
+
 
 void get_disk_info(char *out, size_t outSize) {
     char drives[256];
@@ -337,8 +358,8 @@ int main(int argc, char** argv) {
     int gpuCount = 0;
     int cpuCores = 0;
     int cpuThreads = 0;
-
-    // Collect system info
+    char uptime[128];
+    get_uptime(uptime, sizeof(uptime));  
     get_username(username, sizeof(username));
     get_computername(computer, sizeof(computer));
     get_os_version(osver, sizeof(osver));
@@ -358,8 +379,6 @@ int main(int argc, char** argv) {
         char bar[128];
         memset(bar, 0, sizeof(bar));
 
-
-// ram representation colors
         for (int i = 0; i < freeFilled; i++) {
         strcat(bar, "\xE2\x96\x92");
     }
@@ -416,7 +435,7 @@ int main(int argc, char** argv) {
               cpu, cpuCores, cpuThreads);
 
     char memLine[256];
-_snprintf(memLine, sizeof(memLine),
+    _snprintf(memLine, sizeof(memLine),
           "RAM: %lluMB used / %lluMB total %.0f%%  %s",
           usedMB, totalMB, ramPercent, ramBar);
 
@@ -446,22 +465,22 @@ _snprintf(memLine, sizeof(memLine),
         snprintf(gpu2, sizeof(gpu2), "%s", gpus[1]);
     }
 
-    // 10 rows total: user, os, cpu, gpu1, gpu2, mem, term, disk1-3
-    const char *infoLines[10] = {
-        line1,  // 0 User
-        line2,  // 1 OS
-        line3,  // 2 CPU
-        gpu1,   // 3 GPU 1
-        gpu2,   // 4 GPU 2
-        line5,  // 5 terminal
-        disk1,  // 6 disk 1
-        disk2,  // 7 Disk 2
-        disk3,  // 8 Disk 3
-        line4   //memory bar
+    const char *infoLines[11] = {
+        line1,
+        line2,
+        line3,
+        gpu1,
+        gpu2,
+        line5,
+        disk1,
+        disk2,
+        disk3,
+        line4,
+        uptime 
     };
 
     int i;
-    for (i = 0; i < 10; ++i) {
+    for (i = 0; i < 11; ++i) {
 
         set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
         switch (i) {
@@ -474,7 +493,9 @@ _snprintf(memLine, sizeof(memLine),
             case 6: printf("│ ████████ │ ████████ │"); break;
             case 7: printf("│ ████████ │ ████████ │"); break;
             case 8: printf("└──────────┴──────────┘"); break;
-            case 9: printf("                       "); break; // Blank row under logo
+            case 9: printf("                       "); break;
+            case 10: printf("                       "); break;
+            case 11: printf("                       "); break;
         }
         reset_color();
 
@@ -486,9 +507,12 @@ _snprintf(memLine, sizeof(memLine),
         else if (i == 2) printf("%-10s", "CPU");
         else if (i == 3) printf("%-10s", "Main GPU");
         else if (i == 4) printf("%-10s", "Alt GPU");
-        else if (i == 5) printf("%-10s", "Memory");
-        else if (i == 6) printf("%-10s", "Terminal");
-        else if (i == 7) printf("%-10s", "Disks");
+        else if (i == 5) printf("%-10s", "Terminal");
+        else if (i == 6) printf("%-10s", "Disk 1");
+        else if (i == 7) printf("%-10s", "Disk 2");
+        else if (i == 8) printf("%-10s", "Disk 3");
+        else if (i == 9) printf("%-10s", "Memory");
+        else if (i == 10) printf("%-10s", "Uptime");
         else printf("%-10s", "");
         reset_color();
 
