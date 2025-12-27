@@ -291,6 +291,26 @@ int main(int argc, char** argv) {
     get_cpu_brand(cpu, sizeof(cpu));
     get_cpu_core_info(&cpuCores, &cpuThreads);
     get_memory_info(&totalMB, &freeMB);
+    unsigned long long usedMB = totalMB - freeMB;
+    double ramPercent = 0.0;
+
+    if (totalMB > 0) {
+        ramPercent = (double)usedMB / (double)totalMB * 100.0;
+    }
+
+    char ramBar[64];
+    int barWidth = 20;
+    int filled = (int)((ramPercent / 100.0) * barWidth);
+
+    char bar[128] = "";
+    for (int i = 0; i < barWidth; i++) {
+        strcat(bar, (i < filled) ? "█" : "-");
+    }
+
+_snprintf(ramBar, sizeof(ramBar),
+          "[%s] %.0f%%", bar, ramPercent);
+
+
     get_console_size(&cols, &rows);
     cp = GetConsoleOutputCP();
     get_gpus(gpus, &gpuCount);
@@ -332,9 +352,12 @@ int main(int argc, char** argv) {
               cpu, cpuCores, cpuThreads);
 
     char memLine[256];
-    _snprintf(memLine, sizeof(memLine), "RAM: %lluMB / %lluMB free",
-              (unsigned long long)totalMB,
-              (unsigned long long)freeMB);
+_snprintf(memLine, sizeof(memLine),
+          "RAM: %lluMB used / %lluMB total  %s",
+          (unsigned long long)usedMB,
+          (unsigned long long)totalMB,
+          ramBar);
+
 
     char termLine[256];
     _snprintf(termLine, sizeof(termLine), "Terminal: %hdx%hd  CP %u",
