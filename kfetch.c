@@ -83,7 +83,7 @@ void get_os_version(char *buf, size_t size) {
     else if (strcmp(editionBuf, "ProfessionalN") == 0) editionName = "Pro N";
     else if (strcmp(editionBuf, "CoreN") == 0) editionName = "Home N";
     else if (strcmp(editionBuf, "CoreSingleLanguage") == 0) editionName = "Home Single Language";
-    else if (editionBuf[0] != '\0') editionName = editionBuf; // fallback to raw name
+    else if (editionBuf[0] != '\0') editionName = editionBuf;
 
     if      (build >= 26100) versionName = "Windows 11";
     else if (build >= 22631) versionName = "Windows 11";
@@ -104,10 +104,11 @@ void get_os_version(char *buf, size_t size) {
     else if (build >= 10586) versionName = "Windows 10";
     else if (build >= 10240) versionName = "Windows 10";
     else versionName = "Windows (legacy version)";
-    // OS output
+
     _snprintf(buf, size, "%s %s (build %lu)",
               versionName, editionName, build);
 }
+
 void get_cpu_core_info(int *cores, int *threads) {
     *cores = 0;
     *threads = 0;
@@ -136,7 +137,6 @@ void get_cpu_core_info(int *cores, int *threads) {
         if (info->Relationship == RelationProcessorCore) {
             (*cores)++;
 
-            // Count logical processors (threads)
             KAFFINITY mask = info->Processor.GroupMask[0].Mask;
             int count = 0;
             while (mask) {
@@ -151,8 +151,6 @@ void get_cpu_core_info(int *cores, int *threads) {
 
     free(buffer);
 }
-
-
 
 void get_arch(char *buf, size_t size) {
     SYSTEM_INFO si;
@@ -268,29 +266,29 @@ void get_gpus(char gpuNames[2][256], int *gpuCount) {
 
     SetupDiDestroyDeviceInfoList(hDevInfo);
 }
-// uptime function
-    void get_uptime(char *buf, size_t size) {
-        ULONGLONG ms = GetTickCount64();
 
-        ULONGLONG totalSeconds = ms / 1000;
-        ULONGLONG minutes = totalSeconds / 60;
-        ULONGLONG hours = minutes / 60;
-        ULONGLONG days = hours / 24;
+void get_uptime(char *buf, size_t size) {
+    ULONGLONG ms = GetTickCount64();
 
-        hours %= 24;
-        minutes %= 60;
+    ULONGLONG totalSeconds = ms / 1000;
+    ULONGLONG minutes = totalSeconds / 60;
+    ULONGLONG hours = minutes / 60;
+    ULONGLONG days = hours / 24;
 
-        if (days > 0) {
-            _snprintf(buf, size, "%llu days, %llu hrs, %llu mins",
-                  days, hours, minutes);
-        } else if (hours > 0) {
-            _snprintf(buf, size, "%llu hrs, %llu mins",
-                  hours, minutes);
-        } else {
-            _snprintf(buf, size, "%llu mins",
-                  minutes);
-        }
+    hours %= 24;
+    minutes %= 60;
+
+    if (days > 0) {
+        _snprintf(buf, size, "%llu days, %llu hrs, %llu mins",
+              days, hours, minutes);
+    } else if (hours > 0) {
+        _snprintf(buf, size, "%llu hrs, %llu mins",
+              hours, minutes);
+    } else {
+        _snprintf(buf, size, "%llu mins",
+              minutes);
     }
+}
 
 void get_disk_info(char *out, size_t outSize) {
     out[0] = '\0';
@@ -337,9 +335,94 @@ void get_disk_info(char *out, size_t outSize) {
     }
 }
 
+// VRAM detection
+
+unsigned long long get_vram_registry(int gpuIndex) {
+    HKEY hKey;
+    char path[512];
+    unsigned long long vram = 0;
+
+    snprintf(path, sizeof(path),
+        "SYSTEM\\CurrentControlSet\\Control\\Video");
+
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+        return 0;
+
+    char subkeyName[256];
+    DWORD subkeyLen = sizeof(subkeyName);
+    DWORD index = 0;
+
+    while (RegEnumKeyExA(hKey, index, subkeyName, &subkeyLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
+        char fullPath[512];
+        snprintf(fullPath, sizeof(fullPath),
+            "SYSTEM\\CurrentControlSet\\Control\\Video\\%s\\0000",
+            subkeyName);
+
+        HKEY hSub;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, fullPath, 0, KEY_READ, &hSub) == ERROR_SUCCESS) {
+
+            unsigned long long mem = 0;
+            DWORD memSize = sizeof(mem);
+
+            if (RegQueryValueExA(hSub, "HardwareInformation.qwMemorySize", NULL, NULL,
+                                 (LPBYTE)&mem, &memSize) == ERROR_SUCCESS) {
+
+                if (gpuIndex == 0) {
+                    RegCloseKey(hSub);
+                    RegCloseKey(hKey);
+                    return mem;
+                }
+
+                gpuIndex--;
+            }
+
+            RegCloseKey(hSub);
+        }
+
+        subkeyLen = sizeof(subkeyName);
+        index++;
+    }
+
+    RegCloseKey(hKey);
+    return 0;
+}
+
+// VRAM bar
+
+void make_vram_bar(double used_gb, double total_gb, char* out, size_t outSize) {
+    const int barWidth = 20;
+
+    if (total_gb <= 0.0) {
+        snprintf(out, outSize, "[%*s] 0.0 / 0.0 GB", barWidth, "");
+        return;
+    }
+
+    double free_gb = total_gb - used_gb;
+    if (free_gb < 0) free_gb = 0;
+
+    int usedBlocks = (int)((used_gb / total_gb) * barWidth);
+    if (usedBlocks < 0) usedBlocks = 0;
+    if (usedBlocks > barWidth) usedBlocks = barWidth;
+
+    int freeBlocks = barWidth - usedBlocks;
+
+    char bar[128] = {0};
+
+    // Used on the left (solid), free on the right (light shade)
+    for (int i = 0; i < usedBlocks; i++)
+        strcat(bar, "█");
+
+    for (int i = 0; i < freeBlocks; i++)
+        strcat(bar, "\xE2\x96\x92");
+
+    snprintf(out, outSize, "[%s] %.1f / %.1f GB", bar, used_gb, total_gb);
+}
+
+/* -------------------- main -------------------- */
+
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
-        // Handle command-line flags
+    // Handle command-line flags
     if (argc > 1) {
         if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0) {
             printf("kfetch version %s\n", KFETCH_VERSION);
@@ -354,7 +437,6 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
-
 
     char username[256];
     char computer[256];
@@ -371,7 +453,8 @@ int main(int argc, char** argv) {
     int cpuCores = 0;
     int cpuThreads = 0;
     char uptime[128];
-    get_uptime(uptime, sizeof(uptime));  
+
+    get_uptime(uptime, sizeof(uptime));
     get_username(username, sizeof(username));
     get_computername(computer, sizeof(computer));
     get_os_version(osver, sizeof(osver));
@@ -379,22 +462,24 @@ int main(int argc, char** argv) {
     get_cpu_brand(cpu, sizeof(cpu));
     get_cpu_core_info(&cpuCores, &cpuThreads);
     get_memory_info(&totalMB, &freeMB);
+
     unsigned long long usedMB = totalMB - freeMB;
     double ramPercent = 0.0;
 
-        if (totalMB > 0) {
-            ramPercent = (double)usedMB / (double)totalMB * 100.0;
-}
-        int barWidth = 20;
-        int usedFilled = (int)((ramPercent / 100.0) * barWidth);
-        int freeFilled = barWidth - usedFilled;
-        char bar[128];
-        memset(bar, 0, sizeof(bar));
+    if (totalMB > 0) {
+        ramPercent = (double)usedMB / (double)totalMB * 100.0;
+    }
 
-        for (int i = 0; i < freeFilled; i++) {
+    int barWidth = 20;
+    int usedFilled = (int)((ramPercent / 100.0) * barWidth);
+    int freeFilled = barWidth - usedFilled;
+    char bar[128];
+    memset(bar, 0, sizeof(bar));
+
+    for (int i = 0; i < freeFilled; i++) {
         strcat(bar, "\xE2\x96\x92");
     }
-        for (int i = 0; i < usedFilled; i++) {
+    for (int i = 0; i < usedFilled; i++) {
         strcat(bar, "█");
     }
 
@@ -402,9 +487,6 @@ int main(int argc, char** argv) {
     memset(ramBar, 0, sizeof(ramBar));
     _snprintf(ramBar, sizeof(ramBar),
           "[%s]", bar);
-
-
-
 
     get_console_size(&cols, &rows);
     cp = GetConsoleOutputCP();
@@ -416,20 +498,18 @@ int main(int argc, char** argv) {
     char disk2[1024] = "";
     char disk3[1024] = "";
 
-{
-    char temp[1024];
-    strncpy(temp, diskLine, sizeof(temp));
-    temp[sizeof(temp) - 1] = '\0';
+    {
+        char temp[1024];
+        strncpy(temp, diskLine, sizeof(temp));
+        temp[sizeof(temp) - 1] = '\0';
 
-    char *p = strtok(temp, "\n");
-    if (p) strncpy(disk1, p, sizeof(disk1));
-    p = strtok(NULL, "\n");
-    if (p) strncpy(disk2, p, sizeof(disk2));
-    p = strtok(NULL, "\n");
-    if (p) strncpy(disk3, p, sizeof(disk3));
-}
-
-
+        char *p = strtok(temp, "\n");
+        if (p) strncpy(disk1, p, sizeof(disk1));
+        p = strtok(NULL, "\n");
+        if (p) strncpy(disk2, p, sizeof(disk2));
+        p = strtok(NULL, "\n");
+        if (p) strncpy(disk3, p, sizeof(disk3));
+    }
 
     system("cls");
 
@@ -452,8 +532,6 @@ int main(int argc, char** argv) {
           "RAM: %lluMB used / %lluMB total %.0f%%  %s",
           usedMB, totalMB, ramPercent, ramBar);
 
-
-
     char termLine[256];
     _snprintf(termLine, sizeof(termLine), "Terminal: %hdx%hd  CP %u",
               cols, rows, cp);
@@ -463,71 +541,98 @@ int main(int argc, char** argv) {
     strncpy(line5, termLine, sizeof(line5));
     line5[sizeof(line5) - 1] = '\0';
 
-    // GPU lines
+    // GPU lines + VRAM bars
     char gpu1[256] = "";
     char gpu2[256] = "";
+    char gpu1_vram[256] = "";
+    char gpu2_vram[256] = "";
 
     if (gpuCount == 0) {
         snprintf(gpu1, sizeof(gpu1), "None detected");
+        gpu1_vram[0] = '\0';
         gpu2[0] = '\0';
+        gpu2_vram[0] = '\0';
     } else if (gpuCount == 1) {
-        snprintf(gpu1, sizeof(gpu1), "%s", gpus[0]);
+        unsigned long long vram0 = get_vram_registry(0);
+        double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
+        double used0 = total0;
+
+        snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
+        make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
+
         gpu2[0] = '\0';
+        gpu2_vram[0] = '\0';
     } else {
-        snprintf(gpu1, sizeof(gpu1), "%s", gpus[0]);
-        snprintf(gpu2, sizeof(gpu2), "%s", gpus[1]);
+        unsigned long long vram0 = get_vram_registry(0);
+        unsigned long long vram1 = get_vram_registry(1);
+
+        double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
+        double total1 = (double)vram1 / (1024.0 * 1024.0 * 1024.0);
+
+        double used0 = total0;
+        double used1 = total1;
+
+        snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
+        snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], total1);
+
+        make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
+        make_vram_bar(used1, total1, gpu2_vram, sizeof(gpu2_vram));
     }
 
-    const char *infoLines[11] = {
+    const char *infoLines[13] = {
         line1,
         line2,
         line3,
         gpu1,
+        gpu1_vram,
         gpu2,
+        gpu2_vram,
         line5,
         disk1,
         disk2,
         disk3,
         line4,
-        uptime 
+        uptime
     };
 
     int i;
-    for (i = 0; i < 11; ++i) {
+    for (i = 0; i < 13; ++i) {
 
         set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        switch (i) {
-            case 0: printf("┌──────────┬──────────┐"); break;
-            case 1: printf("│ ████████ │ ████████ │"); break;
-            case 2: printf("│ ████████ │ ████████ │"); break;
-            case 3: printf("│ ████████ │ ████████ │"); break;
-            case 4: printf("├──────────┼──────────┤"); break;
-            case 5: printf("│ ████████ │ ████████ │"); break;
-            case 6: printf("│ ████████ │ ████████ │"); break;
-            case 7: printf("│ ████████ │ ████████ │"); break;
-            case 8: printf("└──────────┴──────────┘"); break;
-            case 9: printf("                       "); break;
-            case 10: printf("                       "); break;
-            case 11: printf("                       "); break;
-            case 12: printf("                       "); break;
-        }
+
+    if (i == 0) {
+        printf("┌──────────┬──────────┐");
+    }
+    else if (i == 6) {
+        printf("├──────────┼──────────┤");
+    }
+    else if (i == 12) {
+        printf("└──────────┴──────────┘");
+    }
+    else {
+        printf("│ ████████ │ ████████ │");
+    }
+
+
         reset_color();
 
         printf("     ");
 
         set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        if (i == 0) printf("%-10s", "User");
+        if (i == 0)      printf("%-10s", "User");
         else if (i == 1) printf("%-10s", "OS");
         else if (i == 2) printf("%-10s", "CPU");
         else if (i == 3) printf("%-10s", "Main GPU");
-        else if (i == 4) printf("%-10s", "Alt GPU");
-        else if (i == 5) printf("%-10s", "Terminal");
-        else if (i == 6) printf("%-10s", "Disk 1");
-        else if (i == 7) printf("%-10s", "Disk 2");
-        else if (i == 8) printf("%-10s", "Disk 3");
-        else if (i == 9) printf("%-10s", "Memory");
-        else if (i == 10) printf("%-10s", "Uptime");
-        else printf("%-10s", "");
+        else if (i == 4) printf("%-10s", "");          // VRAM bar under Main GPU
+        else if (i == 5) printf("%-10s", "Alt GPU");
+        else if (i == 6) printf("%-10s", "");          // VRAM bar under Alt GPU
+        else if (i == 7) printf("%-10s", "Terminal");
+        else if (i == 8) printf("%-10s", "Disk 1");
+        else if (i == 9) printf("%-10s", "Disk 2");
+        else if (i == 10) printf("%-10s", "Disk 3");
+        else if (i == 11) printf("%-10s", "Memory");
+        else if (i == 12) printf("%-10s", "Uptime");
+        else              printf("%-10s", "");
         reset_color();
 
         printf(": %s\n", infoLines[i]);
@@ -543,4 +648,3 @@ int main(int argc, char** argv) {
 
     return 0;
 }
-
