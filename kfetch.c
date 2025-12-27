@@ -325,8 +325,8 @@ void get_disk_info(char *out, size_t outSize) {
         int used = (int)((percent / 100.0) * width);
         int free = width - used;
 
-        for (int i = 0; i < used; i++) strcat(bar, "█");
-        for (int i = 0; i < free; i++) strcat(bar, "\xE2\x96\x92");
+        for (int i = 0; i < used; i++) strcat(bar, "\xE2\x96\x92");
+        for (int i = 0; i < free; i++) strcat(bar, "█");
 
         char line[256];
         snprintf(line, sizeof(line),
