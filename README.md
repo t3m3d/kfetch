@@ -1,2 +1,2 @@
-My first attempt writing c.
-<img width="966" height="300" alt="image" src="https://github.com/user-attachments/assets/3d7dca58-c452-495f-aeaf-5837d49a2934" />
+My first C Programming attempt. Trying to recreate neofetch for windows and eventually Linux.
+<img width="957" height="316" alt="image" src="https://github.com/user-attachments/assets/0e101d9c-f4d5-4d81-b80a-840b2962871f" />
