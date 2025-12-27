@@ -46,17 +46,74 @@ void get_os_version(char *buf, size_t size) {
     OSVERSIONINFOEXA vi;
     ZeroMemory(&vi, sizeof(vi));
     vi.dwOSVersionInfoSize = sizeof(vi);
-    if (GetVersionExA((OSVERSIONINFOA*)&vi)) {
-        _snprintf(buf, size, "Windows %lu.%lu (build %lu)",
-            vi.dwMajorVersion,
-            vi.dwMinorVersion,
-            vi.dwBuildNumber);
-    } else {
+
+    if (!GetVersionExA((OSVERSIONINFOA*)&vi)) {
         strncpy(buf, "Windows (version unknown)", size);
         buf[size - 1] = '\0';
+        return;
     }
-}
 
+    DWORD build = vi.dwBuildNumber;
+    const char *versionName = "Windows";
+    const char *editionName = "Unknown Edition";
+
+    //
+    // Read EditionID from registry
+    //
+    HKEY hKey;
+    char editionBuf[128] = {0};
+    DWORD type = REG_SZ;
+    DWORD dataSize = sizeof(editionBuf);
+
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+        0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        if (RegQueryValueExA(hKey, "EditionID", NULL, &type,
+            (LPBYTE)editionBuf, &dataSize) == ERROR_SUCCESS)
+        {
+            editionBuf[sizeof(editionBuf) - 1] = '\0';
+        }
+        RegCloseKey(hKey);
+    }
+
+    //
+    // Convert EditionID → Friendly name
+    //
+    if (strcmp(editionBuf, "Professional") == 0) editionName = "Pro";
+    else if (strcmp(editionBuf, "Core") == 0) editionName = "Home";
+    else if (strcmp(editionBuf, "Enterprise") == 0) editionName = "Enterprise";
+    else if (strcmp(editionBuf, "Education") == 0) editionName = "Education";
+    else if (strcmp(editionBuf, "ProfessionalWorkstation") == 0) editionName = "Pro Workstation";
+    else if (strcmp(editionBuf, "IoTEnterprise") == 0) editionName = "IoT Enterprise";
+    else if (strcmp(editionBuf, "ProfessionalN") == 0) editionName = "Pro N";
+    else if (strcmp(editionBuf, "CoreN") == 0) editionName = "Home N";
+    else if (strcmp(editionBuf, "CoreSingleLanguage") == 0) editionName = "Home Single Language";
+    else if (editionBuf[0] != '\0') editionName = editionBuf; // fallback to raw name
+    // Windows 10 and 11 detection
+    if      (build >= 26100) versionName = "Windows 11";
+    else if (build >= 22631) versionName = "Windows 11";
+    else if (build >= 22621) versionName = "Windows 11";
+    else if (build >= 22000) versionName = "Windows 11";
+    else if (build >= 19045) versionName = "Windows 10";
+    else if (build >= 19044) versionName = "Windows 10";
+    else if (build >= 19043) versionName = "Windows 10";
+    else if (build >= 19042) versionName = "Windows 10";
+    else if (build >= 19041) versionName = "Windows 10";
+    else if (build >= 18363) versionName = "Windows 10";
+    else if (build >= 18362) versionName = "Windows 10";
+    else if (build >= 17763) versionName = "Windows 10";
+    else if (build >= 17134) versionName = "Windows 10";
+    else if (build >= 16299) versionName = "Windows 10";
+    else if (build >= 15063) versionName = "Windows 10";
+    else if (build >= 14393) versionName = "Windows 10";
+    else if (build >= 10586) versionName = "Windows 10";
+    else if (build >= 10240) versionName = "Windows 10";
+    else versionName = "Windows (legacy version)";
+    // OS output
+    _snprintf(buf, size, "%s %s (build %lu)",
+              versionName, editionName, build);
+}
 void get_cpu_core_info(int *cores, int *threads) {
     *cores = 0;
     *threads = 0;
