@@ -8,17 +8,99 @@
 #include <devguid.h>
 #include <regstr.h>
 #include <initguid.h>
-
+#include <stdint.h>
 #include "version.h"
 #include "kfetch.h"
+#pragma comment(lib, "setupapi.lib")
+#pragma comment(lib, "advapi32.lib")
+#define NVAPI_OK 0
+typedef int NvAPI_Status;
+typedef unsigned int NvU32;
+
 
 DEFINE_GUID(GUID_DEVCLASS_DISPLAY,
     0x4d36e968, 0xe325, 0x11ce,
     0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18);
 
-#pragma comment(lib, "setupapi.lib")
-#pragma comment(lib, "advapi32.lib")
+///  nvidia
+typedef struct {
+    NvU32 version;
+    NvU32 dedicatedVideoMemory;
+    NvU32 availableDedicatedVideoMemory;
+    NvU32 systemVideoMemory;
+    NvU32 sharedSystemMemory;
+} NV_DISPLAY_DRIVER_MEMORY_INFO;
 
+#define NV_DISPLAY_DRIVER_MEMORY_INFO_VER (sizeof(NV_DISPLAY_DRIVER_MEMORY_INFO) | (1 << 16))
+
+typedef NvAPI_Status (__cdecl *NvAPI_QueryInterface_t)(unsigned int offset);
+typedef NvAPI_Status (__cdecl *NvAPI_Initialize_t)(void);
+typedef NvAPI_Status (__cdecl *NvAPI_EnumPhysicalGPUs_t)(void **handles, NvU32 *count);
+typedef NvAPI_Status (__cdecl *NvAPI_GPU_GetMemoryInfo_t)(void *handle, NV_DISPLAY_DRIVER_MEMORY_INFO *info);
+
+static NvAPI_QueryInterface_t NvAPI_QueryInterface = NULL;
+static NvAPI_Initialize_t NvAPI_Initialize = NULL;
+static NvAPI_EnumPhysicalGPUs_t NvAPI_EnumPhysicalGPUs = NULL;
+static NvAPI_GPU_GetMemoryInfo_t NvAPI_GPU_GetMemoryInfo = NULL;
+
+int init_nvapi()
+{
+    HMODULE h = LoadLibraryA("nvapi64.dll");
+    if (!h) return 0;
+
+    NvAPI_QueryInterface = (NvAPI_QueryInterface_t)GetProcAddress(h, "nvapi_QueryInterface");
+    if (!NvAPI_QueryInterface) return 0;
+
+    NvAPI_Initialize = (NvAPI_Initialize_t)(uintptr_t)NvAPI_QueryInterface(0x0150E828);
+    NvAPI_EnumPhysicalGPUs = (NvAPI_EnumPhysicalGPUs_t)(uintptr_t)NvAPI_QueryInterface(0xE5AC921F);
+    NvAPI_GPU_GetMemoryInfo = (NvAPI_GPU_GetMemoryInfo_t)(uintptr_t)NvAPI_QueryInterface(0x0703F2E2);
+
+    if (!NvAPI_Initialize || !NvAPI_EnumPhysicalGPUs || !NvAPI_GPU_GetMemoryInfo)
+        return 0;
+
+    if (NvAPI_Initialize() != NVAPI_OK)
+        return 0;
+
+    return 1;
+}
+
+int get_vram_usage_nvapi(int gpuIndex,
+                         unsigned long long *used,
+                         unsigned long long *total)
+{
+    *used = 0;
+    *total = 0;
+
+    if (!init_nvapi())
+        return 0;
+
+    void *gpuHandles[16] = {0};
+    NvU32 count = 0;
+
+    if (NvAPI_EnumPhysicalGPUs(gpuHandles, &count) != NVAPI_OK)
+        return 0;
+
+    if (gpuIndex >= (int)count)
+        return 0;
+
+    NV_DISPLAY_DRIVER_MEMORY_INFO info;
+    memset(&info, 0, sizeof(info));
+    info.version = NV_DISPLAY_DRIVER_MEMORY_INFO_VER;
+
+    if (NvAPI_GPU_GetMemoryInfo(gpuHandles[gpuIndex], &info) != NVAPI_OK)
+        return 0;
+
+    // Convert MB → bytes
+    unsigned long long totalBytes = (unsigned long long)info.dedicatedVideoMemory * 1024ULL * 1024ULL;
+    unsigned long long freeBytes  = (unsigned long long)info.availableDedicatedVideoMemory * 1024ULL * 1024ULL;
+    unsigned long long usedBytes  = totalBytes - freeBytes;
+
+    *used  = usedBytes;
+    *total = totalBytes;
+
+    return 1;
+}
+ 
 void set_color(WORD attr) {
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     SetConsoleTextAttribute(h, attr);
@@ -291,6 +373,7 @@ void get_uptime(char *buf, size_t size) {
               minutes);
     }
 }
+
 
 void get_disk_info(char *out, size_t outSize) {
     out[0] = '\0';
@@ -580,30 +663,76 @@ void run_kfetch(int argc, char **argv) {
         snprintf(gpu1, sizeof(gpu1), "None detected");
     }
     else if (gpuCount == 1) {
-        unsigned long long vram0 = get_vram_registry(0);
-        double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
-        double used0 = total0 * 0.5;
 
-        snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
-        make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
+        unsigned long long used0 = 0, total0 = 0;
+        int printed = 0;
+
+        // NVIDIA detection
+        if (strstr(gpus[0], "NVIDIA") || strstr(gpus[0], "GeForce")) {
+            if (get_vram_usage_nvapi(0, &used0, &total0)) {
+                double usedGB  = used0  / (1024.0 * 1024.0 * 1024.0);
+                double totalGB = total0 / (1024.0 * 1024.0 * 1024.0);
+
+                snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], totalGB);
+                make_vram_bar(usedGB, totalGB, gpu1_vram, sizeof(gpu1_vram));
+                printed = 1;
+            }
+        }
+
+        // fallback
+        if (!printed) {
+            unsigned long long vram0 = get_vram_registry(0);
+            double totalGB = vram0 / (1024.0 * 1024.0 * 1024.0);
+
+            snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], totalGB);
+            snprintf(gpu1_vram, sizeof(gpu1_vram), "[VRAM usage unavailable]");
+        }
     }
-    else {
-        unsigned long long vram0 = get_vram_registry(0);
-        unsigned long long vram1 = get_vram_registry(1);
+    else { // 2 GPUs
 
-        double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
-        double total1 = (double)vram1 / (1024.0 * 1024.0 * 1024.0);
+        unsigned long long used0 = 0, total0 = 0;
+        unsigned long long used1 = 0, total1 = 0;
+        int printed0 = 0, printed1 = 0;
 
-        double used0 = total0 * 0.5;
-        double used1 = total1 * 0.5;
+        if (strstr(gpus[0], "NVIDIA") || strstr(gpus[0], "GeForce")) {
+            if (get_vram_usage_nvapi(0, &used0, &total0)) {
+                double usedGB0  = used0  / (1024.0 * 1024.0 * 1024.0);
+                double totalGB0 = total0 / (1024.0 * 1024.0 * 1024.0);
 
-        snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
-        snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], total1);
+                snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], totalGB0);
+                make_vram_bar(usedGB0, totalGB0, gpu1_vram, sizeof(gpu1_vram));
+                printed0 = 1;
+            }
+        }
 
-        make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
-        make_vram_bar(used1, total1, gpu2_vram, sizeof(gpu2_vram));
+        if (strstr(gpus[1], "NVIDIA") || strstr(gpus[1], "GeForce")) {
+            if (get_vram_usage_nvapi(1, &used1, &total1)) {
+                double usedGB1  = used1  / (1024.0 * 1024.0 * 1024.0);
+                double totalGB1 = total1 / (1024.0 * 1024.0 * 1024.0);
+
+                snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], totalGB1);
+                make_vram_bar(usedGB1, totalGB1, gpu2_vram, sizeof(gpu2_vram));
+                printed1 = 1;
+            }
+        }
+
+        // fallbacks
+        if (!printed0) {
+            unsigned long long vram0 = get_vram_registry(0);
+            double totalGB0 = vram0 / (1024.0 * 1024.0 * 1024.0);
+
+            snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], totalGB0);
+            snprintf(gpu1_vram, sizeof(gpu1_vram), "[VRAM usage unavailable]");
+        }
+
+        if (!printed1) {
+            unsigned long long vram1 = get_vram_registry(1);
+            double totalGB1 = vram1 / (1024.0 * 1024.0 * 1024.0);
+
+            snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], totalGB1);
+            snprintf(gpu2_vram, sizeof(gpu2_vram), "[VRAM usage unavailable]");
+        }
     }
-
     const char *infoLines[13] = {
         line1, line2, line3,
         gpu1, gpu1_vram,
