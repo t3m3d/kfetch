@@ -437,11 +437,31 @@ void make_vram_bar(double used_gb, double total_gb, char* out, size_t outSize) {
     snprintf(out, outSize, "[%s] %.1f / %.1f GB", bar, used_gb, total_gb);
 }
 
+
 /* -------------------- main -------------------- */
+
+int visible_width(const char *s) {
+    int width = 0, in_escape = 0;
+    while (*s) {
+        if (*s == '\x1b') in_escape = 1;
+        else if (in_escape && *s == 'm') in_escape = 0;
+        else if (!in_escape) width++;
+        s++;
+    }
+    return width;
+}
+
+void print_padded_ansi(const char *s, int total_width) {
+    int w = visible_width(s);
+    int pad = total_width - w;
+    if (pad < 0) pad = 0;
+    printf("%s", s);
+    for (int i = 0; i < pad; i++) putchar(' ');
+}
 
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
-    // Handle command-line flags
+
     if (argc > 1) {
         if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0) {
             printf("kfetch version %s\n", KFETCH_VERSION);
@@ -457,20 +477,34 @@ int main(int argc, char** argv) {
         }
     }
 
-    char username[256];
-    char computer[256];
-    char osver[256];
-    char arch[64];
-    char cpu[256];
-    char diskInfo[1024];
-    char diskLine[1024];
+    #define LOGO_WIDTH 36
+    const char *windows_logo[] = {
+        "\x1b[34m        ,.=:!!t3Z3z.,\x1b[0m",
+        "\x1b[34m       :tt:::tt333EE3\x1b[0m",
+        "\x1b[34m       Et:::ztt33EEEL\x1b[36m @Ee.,      ..,\x1b[0m",
+        "\x1b[34m      ;tt:::tt333EE7\x1b[36m ;EEEEEEttttt33#\x1b[0m",
+        "\x1b[34m     :Et:::zt333EEQ\x1b[36m  SEEEEEttttt33QL\x1b[0m",
+        "\x1b[34m     it::::tt333EEF\x1b[36m @EEEEttttt33F\x1b[0m",
+        "\x1b[34m    ;3=*^```\"*4EEV\x1b[36m :EEEEttttt33@.\x1b[0m",
+        "\x1b[36m    ,.=::::!t=.,\x1b[34m  @EEEEtttz33QF\x1b[0m",
+        "\x1b[36m   ;::::::::zt33)\x1b[34m   \"4EEEtttji\x1b[0m",
+        "\x1b[36m  :t::::::::tt33.\x1b[34m :Z3z..  ``\x1b[0m",
+        "\x1b[36m  i::::::::zt33F\x1b[34m AEEEtttt::::ztF\x1b[0m",
+        "\x1b[36m ;:::::::::t33V\x1b[34m ;EEEttttt::::t3\x1b[0m",
+        "\x1b[36m E::::::::zt33L\x1b[34m @EEEtttt::::z3F\x1b[0m",
+        "\x1b[36m{3=*^```\"*4E3)\x1b[34m ;EEEtttt:::::tZ`\x1b[0m",
+        "\x1b[36m             `\x1b[34m :EEEEtttt::::z7\x1b[0m",
+        "\x1b[34m                 \"VEzjt:;;z>*`\x1b[0m"
+    };
+    const int windows_logo_lines = 16;
+
+    char username[256], computer[256], osver[256], arch[64], cpu[256];
+    char diskInfo[1024], diskLine[1024];
     DWORDLONG totalMB, freeMB;
     short cols, rows;
     UINT cp;
     char gpus[2][256];
-    int gpuCount = 0;
-    int cpuCores = 0;
-    int cpuThreads = 0;
+    int gpuCount = 0, cpuCores = 0, cpuThreads = 0;
     char uptime[128];
 
     get_uptime(uptime, sizeof(uptime));
@@ -483,29 +517,18 @@ int main(int argc, char** argv) {
     get_memory_info(&totalMB, &freeMB);
 
     unsigned long long usedMB = totalMB - freeMB;
-    double ramPercent = 0.0;
-
-    if (totalMB > 0) {
-        ramPercent = (double)usedMB / (double)totalMB * 100.0;
-    }
+    double ramPercent = (totalMB > 0) ? ((double)usedMB / (double)totalMB * 100.0) : 0.0;
 
     int barWidth = 20;
     int usedFilled = (int)((ramPercent / 100.0) * barWidth);
     int freeFilled = barWidth - usedFilled;
-    char bar[128];
-    memset(bar, 0, sizeof(bar));
 
-    for (int i = 0; i < freeFilled; i++) {
-        strcat(bar, "\xE2\x96\x92");
-    }
-    for (int i = 0; i < usedFilled; i++) {
-        strcat(bar, "█");
-    }
+    char bar[128] = {0};
+    for (int i = 0; i < freeFilled; i++) strcat(bar, "\xE2\x96\x92");
+    for (int i = 0; i < usedFilled; i++) strcat(bar, "█");
 
     char ramBar[64];
-    memset(ramBar, 0, sizeof(ramBar));
-    _snprintf(ramBar, sizeof(ramBar),
-          "[%s]", bar);
+    _snprintf(ramBar, sizeof(ramBar), "[%s]", bar);
 
     get_console_size(&cols, &rows);
     cp = GetConsoleOutputCP();
@@ -513,10 +536,7 @@ int main(int argc, char** argv) {
     get_disk_info(diskInfo, sizeof(diskInfo));
     snprintf(diskLine, sizeof(diskLine), "%s", diskInfo);
 
-    char disk1[1024] = "";
-    char disk2[1024] = "";
-    char disk3[1024] = "";
-
+    char disk1[1024] = "", disk2[1024] = "", disk3[1024] = "";
     {
         char temp[1024];
         strncpy(temp, diskLine, sizeof(temp));
@@ -538,142 +558,100 @@ int main(int argc, char** argv) {
     printf("\n");
 
     char line1[256], line2[256], line3[256], line4[256], line5[256];
-
     _snprintf(line1, sizeof(line1), "%s@%s", username, computer);
     _snprintf(line2, sizeof(line2), "%s (%s)", osver, arch);
-
-    _snprintf(line3, sizeof(line3),
-              "%s (%d cores / %d threads)",
-              cpu, cpuCores, cpuThreads);
+    _snprintf(line3, sizeof(line3), "%s (%d cores / %d threads)", cpu, cpuCores, cpuThreads);
 
     char memLine[256];
     _snprintf(memLine, sizeof(memLine),
-          "RAM: %lluMB used / %lluMB total %.0f%%  %s",
-          usedMB, totalMB, ramPercent, ramBar);
+              "RAM: %lluMB used / %lluMB total %.0f%%  %s",
+              usedMB, totalMB, ramPercent, ramBar);
 
     char termLine[256];
     _snprintf(termLine, sizeof(termLine), "Terminal: %hdx%hd  CP %u",
               cols, rows, cp);
 
     strncpy(line4, memLine, sizeof(line4));
-    line4[sizeof(line4) - 1] = '\0';
     strncpy(line5, termLine, sizeof(line5));
-    line5[sizeof(line5) - 1] = '\0';
 
-   // GPU lines + VRAM bars
-    char gpu1[256] = "";
-    char gpu2[256] = "";
-    char gpu1_vram[256] = "";
-    char gpu2_vram[256] = "";
+    char gpu1[256] = "", gpu2[256] = "";
+    char gpu1_vram[256] = "", gpu2_vram[256] = "";
 
-if (gpuCount == 0) {
-    snprintf(gpu1, sizeof(gpu1), "None detected");
-    gpu1_vram[0] = '\0';
-    gpu2[0] = '\0';
-    gpu2_vram[0] = '\0';
-}
-else if (gpuCount == 1) {
-    unsigned long long vram0 = get_vram_registry(0);
-    double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
+    if (gpuCount == 0) {
+        snprintf(gpu1, sizeof(gpu1), "None detected");
+    }
+    else if (gpuCount == 1) {
+        unsigned long long vram0 = get_vram_registry(0);
+        double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
+        double used0 = total0 * 0.5;
 
-    // Fake usage for now (looks better than empty)
-    double used0 = total0 * 0.5;
+        snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
+        make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
+    }
+    else {
+        unsigned long long vram0 = get_vram_registry(0);
+        unsigned long long vram1 = get_vram_registry(1);
 
-    snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
-    make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
+        double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
+        double total1 = (double)vram1 / (1024.0 * 1024.0 * 1024.0);
 
-    gpu2[0] = '\0';
-    gpu2_vram[0] = '\0';
-}
-else {
-    unsigned long long vram0 = get_vram_registry(0);
-    unsigned long long vram1 = get_vram_registry(1);
+        double used0 = total0 * 0.5;
+        double used1 = total1 * 0.5;
 
-    double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
-    double total1 = (double)vram1 / (1024.0 * 1024.0 * 1024.0);
+        snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
+        snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], total1);
 
-    double used0 = total0 * 0.5;
-    double used1 = total1 * 0.5;
-
-    snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
-    snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], total1);
-
-    make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
-    make_vram_bar(used1, total1, gpu2_vram, sizeof(gpu2_vram));
-}
-
-
+        make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
+        make_vram_bar(used1, total1, gpu2_vram, sizeof(gpu2_vram));
+    }
 
     const char *infoLines[13] = {
-        line1,
-        line2,
-        line3,
-        gpu1,
-        gpu1_vram,
-        gpu2,
-        gpu2_vram,
+        line1, line2, line3,
+        gpu1, gpu1_vram,
+        gpu2, gpu2_vram,
         line5,
-        disk1,
-        disk2,
-        disk3,
+        disk1, disk2, disk3,
         line4,
         uptime
     };
 
-    int i;
-    for (i = 0; i < 13; ++i) {
+    const char *labels[13] = {
+        "User", "OS", "CPU",
+        "GPU1", "",
+        "GPU2", "",
+        "Term",
+        "Disk 1", "Disk 2", "Disk 3",
+        "Memory",
+        "Uptime"
+    };
 
-        set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    int maxLines = 13;
+    int total = (maxLines > windows_logo_lines) ? maxLines : windows_logo_lines;
 
-    if (i == 0) {
-        printf("┌──────────┬──────────┐");
-    }
-    else if (i == 6) {
-        printf("├──────────┼──────────┤");
-    }
-    else if (i == 12) {
-        printf("└──────────┴──────────┘");
-    }
-    else {
-        printf("│ ████████ │ ████████ │");
-    }
+    for (int i = 0; i < total; i++) {
 
+        if (i < windows_logo_lines)
+            print_padded_ansi(windows_logo[i], LOGO_WIDTH);
+        else
+            print_padded_ansi("", LOGO_WIDTH);
 
-        reset_color();
+        printf("    "); // spacing between logo and labels
 
-        printf("     ");
-
-set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-
-const char *label = "";
-if (i == 0)      label = "User";
-else if (i == 1) label = "OS";
-else if (i == 2) label = "CPU";
-else if (i == 3) label = "Main GPU";
-else if (i == 4) label = "";            // VRAM bar under Main GPU
-else if (i == 5) label = "Alt GPU";
-else if (i == 6) label = "";            // VRAM bar under Alt GPU
-else if (i == 7) label = "Terminal";
-else if (i == 8) label = "Disk 1";
-else if (i == 9) label = "Disk 2";
-else if (i == 10) label = "Disk 3";
-else if (i == 11) label = "Memory";
-else if (i == 12) label = "Uptime";
-
-printf("%-10s", label);
-reset_color();
-
-// If label is empty, do NOT print colon
-if (label[0] == '\0')
-    printf("  %s\n", infoLines[i]);
-else
-    printf(": %s\n", infoLines[i]);
-
-
+        if (i < maxLines) {
+         if (labels[i][0] != '\0') {
+            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+            printf("%s: ", labels[i]);  // no padding, just label + colon + space
+            reset_color();
+        } else {
+            printf("      ");  // spacing for empty label rows
+        }
+            printf("%s\n", infoLines[i]);
+        } else {
+            printf("\n");
+        }
     }
 
     printf("\n");
-
     set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
     printf("====[ KryptonFetch ]====\n");
     printf("===[ By KryptonBytes ]===\n");
