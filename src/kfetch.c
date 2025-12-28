@@ -10,6 +10,7 @@
 #include <initguid.h>
 
 #include "version.h"
+#include "kfetch.h"
 
 DEFINE_GUID(GUID_DEVCLASS_DISPLAY,
     0x4d36e968, 0xe325, 0x11ce,
@@ -407,6 +408,7 @@ unsigned long long get_vram_registry(int gpuIndex) {
     RegCloseKey(hKey);
     return 0;
 }
+
 // VRAM bar
 void make_vram_bar(double used_gb, double total_gb, char* out, size_t outSize) {
     const int barWidth = 20;
@@ -437,9 +439,6 @@ void make_vram_bar(double used_gb, double total_gb, char* out, size_t outSize) {
     snprintf(out, outSize, "[%s] %.1f / %.1f GB", bar, used_gb, total_gb);
 }
 
-
-/* -------------------- main -------------------- */
-
 int visible_width(const char *s) {
     int width = 0, in_escape = 0;
     while (*s) {
@@ -459,13 +458,13 @@ void print_padded_ansi(const char *s, int total_width) {
     for (int i = 0; i < pad; i++) putchar(' ');
 }
 
-int main(int argc, char** argv) {
+void run_kfetch(int argc, char **argv) {
     SetConsoleOutputCP(CP_UTF8);
 
     if (argc > 1) {
         if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0) {
             printf("kfetch version %s\n", KFETCH_VERSION);
-            return 0;
+            return;
         }
         if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
             printf("KryptonFetch - System Information Tool\n\n");
@@ -473,7 +472,7 @@ int main(int argc, char** argv) {
             printf("Options:\n");
             printf("  --version, -v   Show version information\n");
             printf("  --help, -h      Show this help message\n");
-            return 0;
+            return;
         }
     }
 
@@ -638,13 +637,13 @@ int main(int argc, char** argv) {
         printf("    "); // spacing between logo and labels
 
         if (i < maxLines) {
-         if (labels[i][0] != '\0') {
-            set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-            printf("%s: ", labels[i]);  // no padding, just label + colon + space
-            reset_color();
-        } else {
-            printf("      ");  // spacing for empty label rows
-        }
+            if (labels[i][0] != '\0') {
+                set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+                printf("%s: ", labels[i]);  // no padding, just label + colon + space
+                reset_color();
+            } else {
+                printf("      ");  // spacing for empty label rows
+            }
             printf("%s\n", infoLines[i]);
         } else {
             printf("\n");
@@ -657,6 +656,4 @@ int main(int argc, char** argv) {
     printf("===[ By KryptonBytes ]===\n");
     reset_color();
     printf("\n");
-
-    return 0;
 }
