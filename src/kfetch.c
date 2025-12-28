@@ -1,545 +1,16 @@
-#define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <tchar.h>
-#include <setupapi.h>
-#include <devguid.h>
-#include <regstr.h>
-#include <initguid.h>
-#include <stdint.h>
+#include <stdlib.h>
+
+#include "cpu.h"
+#include "gpu.h"
+#include "mem.h"
+#include "os.h"
+#include "disk.h"
+#include "utils.h"
 #include "version.h"
 #include "kfetch.h"
-#pragma comment(lib, "setupapi.lib")
-#pragma comment(lib, "advapi32.lib")
-#define NVAPI_OK 0
-typedef int NvAPI_Status;
-typedef unsigned int NvU32;
-
-
-DEFINE_GUID(GUID_DEVCLASS_DISPLAY,
-    0x4d36e968, 0xe325, 0x11ce,
-    0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18);
-
-///  nvidia
-typedef struct {
-    NvU32 version;
-    NvU32 dedicatedVideoMemory;
-    NvU32 availableDedicatedVideoMemory;
-    NvU32 systemVideoMemory;
-    NvU32 sharedSystemMemory;
-} NV_DISPLAY_DRIVER_MEMORY_INFO;
-
-#define NV_DISPLAY_DRIVER_MEMORY_INFO_VER (sizeof(NV_DISPLAY_DRIVER_MEMORY_INFO) | (1 << 16))
-
-typedef NvAPI_Status (__cdecl *NvAPI_QueryInterface_t)(unsigned int offset);
-typedef NvAPI_Status (__cdecl *NvAPI_Initialize_t)(void);
-typedef NvAPI_Status (__cdecl *NvAPI_EnumPhysicalGPUs_t)(void **handles, NvU32 *count);
-typedef NvAPI_Status (__cdecl *NvAPI_GPU_GetMemoryInfo_t)(void *handle, NV_DISPLAY_DRIVER_MEMORY_INFO *info);
-
-static NvAPI_QueryInterface_t NvAPI_QueryInterface = NULL;
-static NvAPI_Initialize_t NvAPI_Initialize = NULL;
-static NvAPI_EnumPhysicalGPUs_t NvAPI_EnumPhysicalGPUs = NULL;
-static NvAPI_GPU_GetMemoryInfo_t NvAPI_GPU_GetMemoryInfo = NULL;
-
-int init_nvapi()
-{
-    HMODULE h = LoadLibraryA("nvapi64.dll");
-    if (!h) return 0;
-
-    NvAPI_QueryInterface = (NvAPI_QueryInterface_t)GetProcAddress(h, "nvapi_QueryInterface");
-    if (!NvAPI_QueryInterface) return 0;
-
-    NvAPI_Initialize = (NvAPI_Initialize_t)(uintptr_t)NvAPI_QueryInterface(0x0150E828);
-    NvAPI_EnumPhysicalGPUs = (NvAPI_EnumPhysicalGPUs_t)(uintptr_t)NvAPI_QueryInterface(0xE5AC921F);
-    NvAPI_GPU_GetMemoryInfo = (NvAPI_GPU_GetMemoryInfo_t)(uintptr_t)NvAPI_QueryInterface(0x0703F2E2);
-
-    if (!NvAPI_Initialize || !NvAPI_EnumPhysicalGPUs || !NvAPI_GPU_GetMemoryInfo)
-        return 0;
-
-    if (NvAPI_Initialize() != NVAPI_OK)
-        return 0;
-
-    return 1;
-}
-
-int get_vram_usage_nvapi(int gpuIndex,
-                         unsigned long long *used,
-                         unsigned long long *total)
-{
-    *used = 0;
-    *total = 0;
-
-    if (!init_nvapi())
-        return 0;
-
-    void *gpuHandles[16] = {0};
-    NvU32 count = 0;
-
-    if (NvAPI_EnumPhysicalGPUs(gpuHandles, &count) != NVAPI_OK)
-        return 0;
-
-    if (gpuIndex >= (int)count)
-        return 0;
-
-    NV_DISPLAY_DRIVER_MEMORY_INFO info;
-    memset(&info, 0, sizeof(info));
-    info.version = NV_DISPLAY_DRIVER_MEMORY_INFO_VER;
-
-    if (NvAPI_GPU_GetMemoryInfo(gpuHandles[gpuIndex], &info) != NVAPI_OK)
-        return 0;
-
-    // Convert MB → bytes
-    unsigned long long totalBytes = (unsigned long long)info.dedicatedVideoMemory * 1024ULL * 1024ULL;
-    unsigned long long freeBytes  = (unsigned long long)info.availableDedicatedVideoMemory * 1024ULL * 1024ULL;
-    unsigned long long usedBytes  = totalBytes - freeBytes;
-
-    *used  = usedBytes;
-    *total = totalBytes;
-
-    return 1;
-}
- 
-void set_color(WORD attr) {
-    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    SetConsoleTextAttribute(h, attr);
-}
-
-void reset_color() {
-    set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-}
-
-void get_username(char *buf, DWORD size) {
-    DWORD len = size;
-    if (!GetUserNameA(buf, &len)) {
-        strncpy(buf, "Unknown", size);
-        buf[size - 1] = '\0';
-    }
-}
-
-void get_computername(char *buf, DWORD size) {
-    DWORD len = size;
-    if (!GetComputerNameA(buf, &len)) {
-        strncpy(buf, "Unknown", size);
-        buf[size - 1] = '\0';
-    }
-}
-
-void get_os_version(char *buf, size_t size) {
-    OSVERSIONINFOEXA vi;
-    ZeroMemory(&vi, sizeof(vi));
-    vi.dwOSVersionInfoSize = sizeof(vi);
-
-    if (!GetVersionExA((OSVERSIONINFOA*)&vi)) {
-        strncpy(buf, "Windows (version unknown)", size);
-        buf[size - 1] = '\0';
-        return;
-    }
-
-    DWORD build = vi.dwBuildNumber;
-    const char *versionName = "Windows";
-    const char *editionName = "Unknown Edition";
-
-    HKEY hKey;
-    char editionBuf[128] = {0};
-    DWORD type = REG_SZ;
-    DWORD dataSize = sizeof(editionBuf);
-
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
-        0, KEY_READ, &hKey) == ERROR_SUCCESS)
-    {
-        if (RegQueryValueExA(hKey, "EditionID", NULL, &type,
-            (LPBYTE)editionBuf, &dataSize) == ERROR_SUCCESS)
-        {
-            editionBuf[sizeof(editionBuf) - 1] = '\0';
-        }
-        RegCloseKey(hKey);
-    }
-
-    if (strcmp(editionBuf, "Professional") == 0) editionName = "Pro";
-    else if (strcmp(editionBuf, "Core") == 0) editionName = "Home";
-    else if (strcmp(editionBuf, "Enterprise") == 0) editionName = "Enterprise";
-    else if (strcmp(editionBuf, "Education") == 0) editionName = "Education";
-    else if (strcmp(editionBuf, "ProfessionalWorkstation") == 0) editionName = "Pro Workstation";
-    else if (strcmp(editionBuf, "IoTEnterprise") == 0) editionName = "IoT Enterprise";
-    else if (strcmp(editionBuf, "ProfessionalN") == 0) editionName = "Pro N";
-    else if (strcmp(editionBuf, "CoreN") == 0) editionName = "Home N";
-    else if (strcmp(editionBuf, "CoreSingleLanguage") == 0) editionName = "Home Single Language";
-    else if (editionBuf[0] != '\0') editionName = editionBuf;
-
-    if      (build >= 26100) versionName = "Windows 11";
-    else if (build >= 22631) versionName = "Windows 11";
-    else if (build >= 22621) versionName = "Windows 11";
-    else if (build >= 22000) versionName = "Windows 11";
-    else if (build >= 19045) versionName = "Windows 10";
-    else if (build >= 19044) versionName = "Windows 10";
-    else if (build >= 19043) versionName = "Windows 10";
-    else if (build >= 19042) versionName = "Windows 10";
-    else if (build >= 19041) versionName = "Windows 10";
-    else if (build >= 18363) versionName = "Windows 10";
-    else if (build >= 18362) versionName = "Windows 10";
-    else if (build >= 17763) versionName = "Windows 10";
-    else if (build >= 17134) versionName = "Windows 10";
-    else if (build >= 16299) versionName = "Windows 10";
-    else if (build >= 15063) versionName = "Windows 10";
-    else if (build >= 14393) versionName = "Windows 10";
-    else if (build >= 10586) versionName = "Windows 10";
-    else if (build >= 10240) versionName = "Windows 10";
-    else versionName = "Windows (legacy version)";
-
-    _snprintf(buf, size, "%s %s (build %lu)",
-              versionName, editionName, build);
-}
-
-void get_cpu_core_info(int *cores, int *threads) {
-    *cores = 0;
-    *threads = 0;
-
-    DWORD len = 0;
-    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
-
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *buffer =
-        (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)malloc(len);
-
-    if (!buffer)
-        return;
-
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, buffer, &len)) {
-        free(buffer);
-        return;
-    }
-
-    char *ptr = (char*)buffer;
-    char *end = ptr + len;
-
-    while (ptr < end) {
-        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *info =
-            (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)ptr;
-
-        if (info->Relationship == RelationProcessorCore) {
-            (*cores)++;
-
-            KAFFINITY mask = info->Processor.GroupMask[0].Mask;
-            int count = 0;
-            while (mask) {
-                count += mask & 1;
-                mask >>= 1;
-            }
-            *threads += count;
-        }
-
-        ptr += info->Size;
-    }
-
-    free(buffer);
-}
-
-void get_arch(char *buf, size_t size) {
-    SYSTEM_INFO si;
-    GetNativeSystemInfo(&si);
-
-    const char *arch = "Unknown";
-    switch (si.wProcessorArchitecture) {
-        case PROCESSOR_ARCHITECTURE_AMD64: arch = "x64"; break;
-        case PROCESSOR_ARCHITECTURE_INTEL: arch = "x86"; break;
-        case PROCESSOR_ARCHITECTURE_ARM:   arch = "ARM"; break;
-        case PROCESSOR_ARCHITECTURE_ARM64: arch = "ARM64"; break;
-        default: break;
-    }
-
-    _snprintf(buf, size, "%s", arch);
-}
-
-void get_memory_info(DWORDLONG *totalMB, DWORDLONG *freeMB) {
-    MEMORYSTATUSEX ms;
-    ZeroMemory(&ms, sizeof(ms));
-    ms.dwLength = sizeof(ms);
-
-    if (GlobalMemoryStatusEx(&ms)) {
-        *totalMB = ms.ullTotalPhys / (1024 * 1024);
-        *freeMB  = ms.ullAvailPhys / (1024 * 1024);
-    } else {
-        *totalMB = 0;
-        *freeMB = 0;
-    }
-}
-
-void get_cpu_brand(char *buf, DWORD size) {
-    HKEY hKey;
-    LONG status = RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-        "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-        0,
-        KEY_READ,
-        &hKey);
-
-    if (status != ERROR_SUCCESS) {
-        strncpy(buf, "Unknown CPU", size);
-        buf[size - 1] = '\0';
-        return;
-    }
-
-    DWORD type = 0;
-    DWORD dataSize = size;
-    status = RegQueryValueExA(hKey, "ProcessorNameString", NULL, &type, (LPBYTE)buf, &dataSize);
-
-    RegCloseKey(hKey);
-
-    if (status != ERROR_SUCCESS || type != REG_SZ) {
-        strncpy(buf, "Unknown CPU", size);
-        buf[size - 1] = '\0';
-    } else {
-        buf[size - 1] = '\0';
-    }
-}
-
-void get_console_size(short *cols, short *rows) {
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (GetConsoleScreenBufferInfo(h, &csbi)) {
-        *cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-        *rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-    } else {
-        *cols = 0;
-        *rows = 0;
-    }
-}
-
-void get_gpus(char gpuNames[2][256], int *gpuCount) {
-    *gpuCount = 0;
-
-    HDEVINFO hDevInfo = SetupDiGetClassDevsA(
-        &GUID_DEVCLASS_DISPLAY,
-        NULL,
-        NULL,
-        DIGCF_PRESENT
-    );
-
-    if (hDevInfo == INVALID_HANDLE_VALUE)
-        return;
-
-    SP_DEVINFO_DATA devInfo;
-    devInfo.cbSize = sizeof(SP_DEVINFO_DATA);
-
-    for (DWORD i = 0; i < 10 && *gpuCount < 2; i++) {
-        if (!SetupDiEnumDeviceInfo(hDevInfo, i, &devInfo))
-            break;
-
-        char name[256];
-        DWORD size = sizeof(name);
-        DWORD type = 0;
-
-        if (!SetupDiGetDeviceRegistryPropertyA(
-                hDevInfo,
-                &devInfo,
-                SPDRP_DEVICEDESC,
-                &type,
-                (BYTE*)name,
-                size,
-                &size))
-            continue;
-
-        if (strstr(name, "Microsoft Basic Render"))
-            continue;
-
-        strncpy(gpuNames[*gpuCount], name, 256);
-        gpuNames[*gpuCount][255] = '\0';
-        (*gpuCount)++;
-    }
-
-    SetupDiDestroyDeviceInfoList(hDevInfo);
-}
-
-void get_uptime(char *buf, size_t size) {
-    ULONGLONG ms = GetTickCount64();
-
-    ULONGLONG totalSeconds = ms / 1000;
-    ULONGLONG minutes = totalSeconds / 60;
-    ULONGLONG hours = minutes / 60;
-    ULONGLONG days = hours / 24;
-
-    hours %= 24;
-    minutes %= 60;
-
-    if (days > 0) {
-        _snprintf(buf, size, "%llu days, %llu hrs, %llu mins",
-              days, hours, minutes);
-    } else if (hours > 0) {
-        _snprintf(buf, size, "%llu hrs, %llu mins",
-              hours, minutes);
-    } else {
-        _snprintf(buf, size, "%llu mins",
-              minutes);
-    }
-}
-
-
-void get_disk_info(char *out, size_t outSize) {
-    out[0] = '\0';
-
-    DWORD drives = GetLogicalDrives();
-
-    for (char letter = 'A'; letter <= 'Z'; letter++) {
-        if (!(drives & (1 << (letter - 'A'))))
-            continue;
-
-        char root[4];
-        snprintf(root, sizeof(root), "%c:\\", letter);
-
-        ULARGE_INTEGER freeBytes, totalBytes, totalFreeBytes;
-        if (!GetDiskFreeSpaceExA(root, &freeBytes, &totalBytes, &totalFreeBytes)) {
-            char line[256];
-            snprintf(line, sizeof(line), "%s  (access denied)\n", root);
-            strncat(out, line, outSize - strlen(out) - 1);
-            continue;
-        }
-
-        unsigned long long totalGB = totalBytes.QuadPart / (1024ULL*1024ULL*1024ULL);
-        unsigned long long freeGB  = totalFreeBytes.QuadPart / (1024ULL*1024ULL*1024ULL);
-        unsigned long long usedGB  = totalGB - freeGB;
-
-        double percent = (totalGB > 0)
-            ? ((double)usedGB / (double)totalGB * 100.0)
-            : 0.0;
-
-        char bar[64] = "";
-        int width = 20;
-        int used = (int)((percent / 100.0) * width);
-        int free = width - used;
-
-        for (int i = 0; i < used; i++) strcat(bar, "\xE2\x96\x92");
-        for (int i = 0; i < free; i++) strcat(bar, "█");
-
-        char line[256];
-        snprintf(line, sizeof(line),
-                 "%s  %lluGB / %lluGB  %.0f%%  [%s]\n",
-                 root, usedGB, totalGB, percent, bar);
-
-        strncat(out, line, outSize - strlen(out) - 1);
-    }
-}
-
-unsigned long long get_vram_registry(int gpuIndex) {
-    HKEY hKey;
-    char path[512];
-
-    snprintf(path, sizeof(path),
-        "SYSTEM\\CurrentControlSet\\Control\\Video");
-
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
-        return 0;
-
-    char subkeyName[256];
-    DWORD subkeyLen = sizeof(subkeyName);
-    DWORD index = 0;
-
-    while (RegEnumKeyExA(hKey, index, subkeyName, &subkeyLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-
-        char fullPath[512];
-        snprintf(fullPath, sizeof(fullPath),
-            "SYSTEM\\CurrentControlSet\\Control\\Video\\%s\\0000",
-            subkeyName);
-
-        HKEY hSub;
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, fullPath, 0, KEY_READ, &hSub) == ERROR_SUCCESS) {
-
-            unsigned long long mem = 0;
-            DWORD memSize = sizeof(mem);
-            // Try modern key
-            if (RegQueryValueExA(hSub, "HardwareInformation.MemorySize", NULL, NULL,
-                                 (LPBYTE)&mem, &memSize) == ERROR_SUCCESS && mem > 0) {
-                if (gpuIndex == 0) {
-                    RegCloseKey(hSub);
-                    RegCloseKey(hKey);
-                    return mem;
-                }
-                gpuIndex--;
-            }
-            // Try legacy key
-            mem = 0;
-            memSize = sizeof(mem);
-            if (RegQueryValueExA(hSub, "HardwareInformation.MemorySizeLegacy", NULL, NULL,
-                                 (LPBYTE)&mem, &memSize) == ERROR_SUCCESS && mem > 0) {
-                if (gpuIndex == 0) {
-                    RegCloseKey(hSub);
-                    RegCloseKey(hKey);
-                    return mem;
-                }
-                gpuIndex--;
-            }
-            // Try old key
-            mem = 0;
-            memSize = sizeof(mem);
-            if (RegQueryValueExA(hSub, "HardwareInformation.qwMemorySize", NULL, NULL,
-                                 (LPBYTE)&mem, &memSize) == ERROR_SUCCESS && mem > 0) {
-                if (gpuIndex == 0) {
-                    RegCloseKey(hSub);
-                    RegCloseKey(hKey);
-                    return mem;
-                }
-                gpuIndex--;
-            }
-
-            RegCloseKey(hSub);
-        }
-
-        subkeyLen = sizeof(subkeyName);
-        index++;
-    }
-
-    RegCloseKey(hKey);
-    return 0;
-}
-
-// VRAM bar
-void make_vram_bar(double used_gb, double total_gb, char* out, size_t outSize) {
-    const int barWidth = 20;
-
-    if (total_gb <= 0.0) {
-        snprintf(out, outSize, "[%*s] 0.0 / 0.0 GB", barWidth, "");
-        return;
-    }
-
-    double free_gb = total_gb - used_gb;
-    if (free_gb < 0) free_gb = 0;
-
-    int usedBlocks = (int)((used_gb / total_gb) * barWidth);
-    if (usedBlocks < 0) usedBlocks = 0;
-    if (usedBlocks > barWidth) usedBlocks = barWidth;
-
-    int freeBlocks = barWidth - usedBlocks;
-
-    char bar[128] = {0};
-
-    // Used on the left (solid), free on the right (light shade)
-    for (int i = 0; i < usedBlocks; i++)
-        strcat(bar, "\xE2\x96\x92");
-
-    for (int i = 0; i < freeBlocks; i++)
-        strcat(bar, "█");
-
-    snprintf(out, outSize, "[%s] %.1f / %.1f GB", bar, used_gb, total_gb);
-}
-
-int visible_width(const char *s) {
-    int width = 0, in_escape = 0;
-    while (*s) {
-        if (*s == '\x1b') in_escape = 1;
-        else if (in_escape && *s == 'm') in_escape = 0;
-        else if (!in_escape) width++;
-        s++;
-    }
-    return width;
-}
-
-void print_padded_ansi(const char *s, int total_width) {
-    int w = visible_width(s);
-    int pad = total_width - w;
-    if (pad < 0) pad = 0;
-    printf("%s", s);
-    for (int i = 0; i < pad; i++) putchar(' ');
-}
 
 void run_kfetch(int argc, char **argv) {
     SetConsoleOutputCP(CP_UTF8);
@@ -582,9 +53,9 @@ void run_kfetch(int argc, char **argv) {
 
     char username[256], computer[256], osver[256], arch[64], cpu[256];
     char diskInfo[1024], diskLine[1024];
-    DWORDLONG totalMB, freeMB;
-    short cols, rows;
-    UINT cp;
+    DWORDLONG totalMB = 0, freeMB = 0;
+    short cols = 0, rows = 0;
+    UINT cp = 0;
     char gpus[2][256];
     int gpuCount = 0, cpuCores = 0, cpuThreads = 0;
     char uptime[128];
@@ -599,15 +70,19 @@ void run_kfetch(int argc, char **argv) {
     get_memory_info(&totalMB, &freeMB);
 
     unsigned long long usedMB = totalMB - freeMB;
-    double ramPercent = (totalMB > 0) ? ((double)usedMB / (double)totalMB * 100.0) : 0.0;
+    double ramPercent = (totalMB > 0)
+        ? ((double)usedMB / (double)totalMB * 100.0)
+        : 0.0;
 
     int barWidth = 20;
     int usedFilled = (int)((ramPercent / 100.0) * barWidth);
     int freeFilled = barWidth - usedFilled;
 
     char bar[128] = {0};
-    for (int i = 0; i < freeFilled; i++) strcat(bar, "\xE2\x96\x92");
-    for (int i = 0; i < usedFilled; i++) strcat(bar, "█");
+    for (int i = 0; i < freeFilled; i++)
+        strcat(bar, "\xE2\x96\x92");
+    for (int i = 0; i < usedFilled; i++)
+        strcat(bar, "█");
 
     char ramBar[64];
     _snprintf(ramBar, sizeof(ramBar), "[%s]", bar);
@@ -642,7 +117,8 @@ void run_kfetch(int argc, char **argv) {
     char line1[256], line2[256], line3[256], line4[256], line5[256];
     _snprintf(line1, sizeof(line1), "%s@%s", username, computer);
     _snprintf(line2, sizeof(line2), "%s (%s)", osver, arch);
-    _snprintf(line3, sizeof(line3), "%s (%d cores / %d threads)", cpu, cpuCores, cpuThreads);
+    _snprintf(line3, sizeof(line3), "%s (%d cores / %d threads)",
+              cpu, cpuCores, cpuThreads);
 
     char memLine[256];
     _snprintf(memLine, sizeof(memLine),
@@ -650,46 +126,46 @@ void run_kfetch(int argc, char **argv) {
               usedMB, totalMB, ramPercent, ramBar);
 
     char termLine[256];
-    _snprintf(termLine, sizeof(termLine), "Terminal: %hdx%hd  CP %u",
-              cols, rows, cp);
+    _snprintf(termLine, sizeof(termLine),
+              "Terminal: %hdx%hd  CP %u", cols, rows, cp);
 
     strncpy(line4, memLine, sizeof(line4));
+    line4[sizeof(line4) - 1] = '\0';
     strncpy(line5, termLine, sizeof(line5));
+    line5[sizeof(line5) - 1] = '\0';
 
     char gpu1[256] = "", gpu2[256] = "";
     char gpu1_vram[256] = "", gpu2_vram[256] = "";
 
     if (gpuCount == 0) {
         snprintf(gpu1, sizeof(gpu1), "None detected");
-    }
-    else if (gpuCount == 1) {
-
+    } else if (gpuCount == 1) {
         unsigned long long used0 = 0, total0 = 0;
         int printed = 0;
 
-        // NVIDIA detection
         if (strstr(gpus[0], "NVIDIA") || strstr(gpus[0], "GeForce")) {
             if (get_vram_usage_nvapi(0, &used0, &total0)) {
                 double usedGB  = used0  / (1024.0 * 1024.0 * 1024.0);
                 double totalGB = total0 / (1024.0 * 1024.0 * 1024.0);
 
-                snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], totalGB);
-                make_vram_bar(usedGB, totalGB, gpu1_vram, sizeof(gpu1_vram));
+                snprintf(gpu1, sizeof(gpu1),
+                         "%s (%.1f GB VRAM)", gpus[0], totalGB);
+                make_vram_bar(usedGB, totalGB,
+                              gpu1_vram, sizeof(gpu1_vram));
                 printed = 1;
             }
         }
 
-        // fallback
         if (!printed) {
             unsigned long long vram0 = get_vram_registry(0);
             double totalGB = vram0 / (1024.0 * 1024.0 * 1024.0);
 
-            snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], totalGB);
-            snprintf(gpu1_vram, sizeof(gpu1_vram), "[VRAM usage unavailable]");
+            snprintf(gpu1, sizeof(gpu1),
+                     "%s (%.1f GB VRAM)", gpus[0], totalGB);
+            snprintf(gpu1_vram, sizeof(gpu1_vram),
+                     "[VRAM usage unavailable]");
         }
-    }
-    else { // 2 GPUs
-
+    } else { // 2 GPUs
         unsigned long long used0 = 0, total0 = 0;
         unsigned long long used1 = 0, total1 = 0;
         int printed0 = 0, printed1 = 0;
@@ -699,8 +175,10 @@ void run_kfetch(int argc, char **argv) {
                 double usedGB0  = used0  / (1024.0 * 1024.0 * 1024.0);
                 double totalGB0 = total0 / (1024.0 * 1024.0 * 1024.0);
 
-                snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], totalGB0);
-                make_vram_bar(usedGB0, totalGB0, gpu1_vram, sizeof(gpu1_vram));
+                snprintf(gpu1, sizeof(gpu1),
+                         "%s (%.1f GB VRAM)", gpus[0], totalGB0);
+                make_vram_bar(usedGB0, totalGB0,
+                              gpu1_vram, sizeof(gpu1_vram));
                 printed0 = 1;
             }
         }
@@ -710,29 +188,35 @@ void run_kfetch(int argc, char **argv) {
                 double usedGB1  = used1  / (1024.0 * 1024.0 * 1024.0);
                 double totalGB1 = total1 / (1024.0 * 1024.0 * 1024.0);
 
-                snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], totalGB1);
-                make_vram_bar(usedGB1, totalGB1, gpu2_vram, sizeof(gpu2_vram));
+                snprintf(gpu2, sizeof(gpu2),
+                         "%s (%.1f GB VRAM)", gpus[1], totalGB1);
+                make_vram_bar(usedGB1, totalGB1,
+                              gpu2_vram, sizeof(gpu2_vram));
                 printed1 = 1;
             }
         }
 
-        // fallbacks
         if (!printed0) {
             unsigned long long vram0 = get_vram_registry(0);
             double totalGB0 = vram0 / (1024.0 * 1024.0 * 1024.0);
 
-            snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], totalGB0);
-            snprintf(gpu1_vram, sizeof(gpu1_vram), "[VRAM usage unavailable]");
+            snprintf(gpu1, sizeof(gpu1),
+                     "%s (%.1f GB VRAM)", gpus[0], totalGB0);
+            snprintf(gpu1_vram, sizeof(gpu1_vram),
+                     "[VRAM usage unavailable]");
         }
 
         if (!printed1) {
             unsigned long long vram1 = get_vram_registry(1);
             double totalGB1 = vram1 / (1024.0 * 1024.0 * 1024.0);
 
-            snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], totalGB1);
-            snprintf(gpu2_vram, sizeof(gpu2_vram), "[VRAM usage unavailable]");
+            snprintf(gpu2, sizeof(gpu2),
+                     "%s (%.1f GB VRAM)", gpus[1], totalGB1);
+            snprintf(gpu2_vram, sizeof(gpu2_vram),
+                     "[VRAM usage unavailable]");
         }
     }
+
     const char *infoLines[13] = {
         line1, line2, line3,
         gpu1, gpu1_vram,
@@ -754,24 +238,24 @@ void run_kfetch(int argc, char **argv) {
     };
 
     int maxLines = 13;
-    int total = (maxLines > windows_logo_lines) ? maxLines : windows_logo_lines;
+    int total = (maxLines > windows_logo_lines)
+        ? maxLines : windows_logo_lines;
 
     for (int i = 0; i < total; i++) {
-
         if (i < windows_logo_lines)
             print_padded_ansi(windows_logo[i], LOGO_WIDTH);
         else
             print_padded_ansi("", LOGO_WIDTH);
 
-        printf("    "); // spacing between logo and labels
+        printf("    ");
 
         if (i < maxLines) {
             if (labels[i][0] != '\0') {
                 set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-                printf("%s: ", labels[i]);  // no padding, just label + colon + space
+                printf("%s: ", labels[i]);
                 reset_color();
             } else {
-                printf("      ");  // spacing for empty label rows
+                printf("      ");
             }
             printf("%s\n", infoLines[i]);
         } else {
