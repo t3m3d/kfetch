@@ -8,6 +8,7 @@
 #include <devguid.h>
 #include <regstr.h>
 #include <initguid.h>
+
 #include "version.h"
 
 DEFINE_GUID(GUID_DEVCLASS_DISPLAY,
@@ -335,12 +336,9 @@ void get_disk_info(char *out, size_t outSize) {
     }
 }
 
-// VRAM detection
-
 unsigned long long get_vram_registry(int gpuIndex) {
     HKEY hKey;
     char path[512];
-    unsigned long long vram = 0;
 
     snprintf(path, sizeof(path),
         "SYSTEM\\CurrentControlSet\\Control\\Video");
@@ -353,6 +351,7 @@ unsigned long long get_vram_registry(int gpuIndex) {
     DWORD index = 0;
 
     while (RegEnumKeyExA(hKey, index, subkeyName, &subkeyLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
+
         char fullPath[512];
         snprintf(fullPath, sizeof(fullPath),
             "SYSTEM\\CurrentControlSet\\Control\\Video\\%s\\0000",
@@ -363,16 +362,38 @@ unsigned long long get_vram_registry(int gpuIndex) {
 
             unsigned long long mem = 0;
             DWORD memSize = sizeof(mem);
-
-            if (RegQueryValueExA(hSub, "HardwareInformation.qwMemorySize", NULL, NULL,
-                                 (LPBYTE)&mem, &memSize) == ERROR_SUCCESS) {
-
+            // Try modern key
+            if (RegQueryValueExA(hSub, "HardwareInformation.MemorySize", NULL, NULL,
+                                 (LPBYTE)&mem, &memSize) == ERROR_SUCCESS && mem > 0) {
                 if (gpuIndex == 0) {
                     RegCloseKey(hSub);
                     RegCloseKey(hKey);
                     return mem;
                 }
-
+                gpuIndex--;
+            }
+            // Try legacy key
+            mem = 0;
+            memSize = sizeof(mem);
+            if (RegQueryValueExA(hSub, "HardwareInformation.MemorySizeLegacy", NULL, NULL,
+                                 (LPBYTE)&mem, &memSize) == ERROR_SUCCESS && mem > 0) {
+                if (gpuIndex == 0) {
+                    RegCloseKey(hSub);
+                    RegCloseKey(hKey);
+                    return mem;
+                }
+                gpuIndex--;
+            }
+            // Try old key
+            mem = 0;
+            memSize = sizeof(mem);
+            if (RegQueryValueExA(hSub, "HardwareInformation.qwMemorySize", NULL, NULL,
+                                 (LPBYTE)&mem, &memSize) == ERROR_SUCCESS && mem > 0) {
+                if (gpuIndex == 0) {
+                    RegCloseKey(hSub);
+                    RegCloseKey(hKey);
+                    return mem;
+                }
                 gpuIndex--;
             }
 
@@ -386,9 +407,7 @@ unsigned long long get_vram_registry(int gpuIndex) {
     RegCloseKey(hKey);
     return 0;
 }
-
 // VRAM bar
-
 void make_vram_bar(double used_gb, double total_gb, char* out, size_t outSize) {
     const int barWidth = 20;
 
@@ -410,10 +429,10 @@ void make_vram_bar(double used_gb, double total_gb, char* out, size_t outSize) {
 
     // Used on the left (solid), free on the right (light shade)
     for (int i = 0; i < usedBlocks; i++)
-        strcat(bar, "█");
+        strcat(bar, "\xE2\x96\x92");
 
     for (int i = 0; i < freeBlocks; i++)
-        strcat(bar, "\xE2\x96\x92");
+        strcat(bar, "█");
 
     snprintf(out, outSize, "[%s] %.1f / %.1f GB", bar, used_gb, total_gb);
 }
@@ -541,43 +560,49 @@ int main(int argc, char** argv) {
     strncpy(line5, termLine, sizeof(line5));
     line5[sizeof(line5) - 1] = '\0';
 
-    // GPU lines + VRAM bars
+   // GPU lines + VRAM bars
     char gpu1[256] = "";
     char gpu2[256] = "";
     char gpu1_vram[256] = "";
     char gpu2_vram[256] = "";
 
-    if (gpuCount == 0) {
-        snprintf(gpu1, sizeof(gpu1), "None detected");
-        gpu1_vram[0] = '\0';
-        gpu2[0] = '\0';
-        gpu2_vram[0] = '\0';
-    } else if (gpuCount == 1) {
-        unsigned long long vram0 = get_vram_registry(0);
-        double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
-        double used0 = total0;
+if (gpuCount == 0) {
+    snprintf(gpu1, sizeof(gpu1), "None detected");
+    gpu1_vram[0] = '\0';
+    gpu2[0] = '\0';
+    gpu2_vram[0] = '\0';
+}
+else if (gpuCount == 1) {
+    unsigned long long vram0 = get_vram_registry(0);
+    double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
 
-        snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
-        make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
+    // Fake usage for now (looks better than empty)
+    double used0 = total0 * 0.5;
 
-        gpu2[0] = '\0';
-        gpu2_vram[0] = '\0';
-    } else {
-        unsigned long long vram0 = get_vram_registry(0);
-        unsigned long long vram1 = get_vram_registry(1);
+    snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
+    make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
 
-        double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
-        double total1 = (double)vram1 / (1024.0 * 1024.0 * 1024.0);
+    gpu2[0] = '\0';
+    gpu2_vram[0] = '\0';
+}
+else {
+    unsigned long long vram0 = get_vram_registry(0);
+    unsigned long long vram1 = get_vram_registry(1);
 
-        double used0 = total0;
-        double used1 = total1;
+    double total0 = (double)vram0 / (1024.0 * 1024.0 * 1024.0);
+    double total1 = (double)vram1 / (1024.0 * 1024.0 * 1024.0);
 
-        snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
-        snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], total1);
+    double used0 = total0 * 0.5;
+    double used1 = total1 * 0.5;
 
-        make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
-        make_vram_bar(used1, total1, gpu2_vram, sizeof(gpu2_vram));
-    }
+    snprintf(gpu1, sizeof(gpu1), "%s (%.1f GB VRAM)", gpus[0], total0);
+    snprintf(gpu2, sizeof(gpu2), "%s (%.1f GB VRAM)", gpus[1], total1);
+
+    make_vram_bar(used0, total0, gpu1_vram, sizeof(gpu1_vram));
+    make_vram_bar(used1, total1, gpu2_vram, sizeof(gpu2_vram));
+}
+
+
 
     const char *infoLines[13] = {
         line1,
@@ -618,24 +643,33 @@ int main(int argc, char** argv) {
 
         printf("     ");
 
-        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        if (i == 0)      printf("%-10s", "User");
-        else if (i == 1) printf("%-10s", "OS");
-        else if (i == 2) printf("%-10s", "CPU");
-        else if (i == 3) printf("%-10s", "Main GPU");
-        else if (i == 4) printf("%-10s", "");          // VRAM bar under Main GPU
-        else if (i == 5) printf("%-10s", "Alt GPU");
-        else if (i == 6) printf("%-10s", "");          // VRAM bar under Alt GPU
-        else if (i == 7) printf("%-10s", "Terminal");
-        else if (i == 8) printf("%-10s", "Disk 1");
-        else if (i == 9) printf("%-10s", "Disk 2");
-        else if (i == 10) printf("%-10s", "Disk 3");
-        else if (i == 11) printf("%-10s", "Memory");
-        else if (i == 12) printf("%-10s", "Uptime");
-        else              printf("%-10s", "");
-        reset_color();
+set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
 
-        printf(": %s\n", infoLines[i]);
+const char *label = "";
+if (i == 0)      label = "User";
+else if (i == 1) label = "OS";
+else if (i == 2) label = "CPU";
+else if (i == 3) label = "Main GPU";
+else if (i == 4) label = "";            // VRAM bar under Main GPU
+else if (i == 5) label = "Alt GPU";
+else if (i == 6) label = "";            // VRAM bar under Alt GPU
+else if (i == 7) label = "Terminal";
+else if (i == 8) label = "Disk 1";
+else if (i == 9) label = "Disk 2";
+else if (i == 10) label = "Disk 3";
+else if (i == 11) label = "Memory";
+else if (i == 12) label = "Uptime";
+
+printf("%-10s", label);
+reset_color();
+
+// If label is empty, do NOT print colon
+if (label[0] == '\0')
+    printf("  %s\n", infoLines[i]);
+else
+    printf(": %s\n", infoLines[i]);
+
+
     }
 
     printf("\n");
